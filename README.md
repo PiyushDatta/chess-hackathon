@@ -1,4 +1,5 @@
-# chess-hackathon
+# NOT OFFICIAL REPO - THIS IS FORK - PLEASE IGNORE
+# OFFICIAL REPO: https://github.com/StrongResearch/chess-hackathon
 
 ## Quick Start Guide
 Before attempting the steps in this guide, please ensure you have completed all onboarding steps from the **Getting Started** section of the [Strong Compute Developer Docs](https://strong-compute.gitbook.io/developer-docs). 
