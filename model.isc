@@ -2,9 +2,10 @@ isc_project_id = "8caa9de6-88e4-485d-8328-d975734cc06b"
 experiment_name = "chessGPT-piydatta"
 gpu_type = "24GB VRAM GPU"
 gpus = 48
+burst_shape_priority_list = ["gcp-asia-southeast1-h100-spot","gcp-us-central-h100-spot"]
 output_path = "/root/chess-hackathon/isc_outputs"
 dataset_id = "83f72080-4aee-445b-874f-7190d6880e13"
-compute_mode = "cycle"
+compute_mode = "burst"
 command = '''
 source /root/.chess/bin/activate && 
 cd /root/chess-hackathon/ && 
