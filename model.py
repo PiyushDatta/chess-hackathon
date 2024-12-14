@@ -114,7 +114,7 @@ class TransformerEncoderBlock(nn.Module):
 
 class Model(nn.Module):
     """Transformer Model"""
-    def __init__(self, device, nlayers=10, embed_dim=512, nhead=8, head_dim=64, ff_dim=2048, dropout=0.1, rope=True, causal=True, norm_first=False, ghost=False):
+    def __init__(self, device='cpu', nlayers=10, embed_dim=512, nhead=8, head_dim=64, ff_dim=2048, dropout=0.1, rope=True, causal=True, norm_first=False, ghost=False):
         super().__init__()
         self.vocab = PGN_CHARS
         self.device = device

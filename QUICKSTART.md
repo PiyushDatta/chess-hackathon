@@ -11,6 +11,21 @@ pip install -r requirements.txt
 python run.py
 ```
 
+### ISC training
+
+```
+Go to train.py and change local_gpu to false
+```
+
+```
+source /root/.chess/bin/activate
+isc train model.isc
+```
+Check experiments with
+```
+isc experiments
+```
+
 ### Local training
 Copy train_chessGPT.py to train.py
 ```

@@ -85,7 +85,7 @@ def main(args, timer):
         args.load_path = "/root/chess-hackathon/checkpoints/latest_pt"
         data_path = "/data/lc0"
     else:
-        data_path = "/data"
+        data_path = "/data/lc0"
 
     saver = AtomicDirectory(args.save_dir)
     timer.report("Validated checkpoint path")

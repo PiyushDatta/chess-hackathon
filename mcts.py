@@ -9,7 +9,7 @@ from chess.engine import SimpleEngine, Limit
 from tqdm import tqdm
 from utils.data_utils import score_possible_boards
 
-STOCKFISH_PATH = "/root/chess-hackathon-4/utils/stockfish"
+STOCKFISH_PATH = "/root/chess-hackathon/utils/stockfish"
 
 
 class MCTSNode:
