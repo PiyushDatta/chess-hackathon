@@ -43,6 +43,7 @@ def get_args_parser():
     return parser
 
 def main(args, timer):
+    local_gpu = True
     dist.init_process_group("nccl")  # Expects RANK set in environment variable
     rank = int(os.environ["RANK"])  # Rank of this GPU in cluster
     world_size = int(os.environ["WORLD_SIZE"]) # Total number of GPUs in the cluster
@@ -57,10 +58,16 @@ def main(args, timer):
         print(f"TrainConfig: {args}")
     timer.report("Setup for distributed training")
 
+    if local_gpu:
+        args.save_dir = "/root/chess-hackathon/checkpoint.pt"
     saver = AtomicDirectory(args.save_dir)
     timer.report("Validated checkpoint path")
 
-    data_path = "/data"
+    if local_gpu:
+        data_path = "/data/gm"
+    else:
+        data_path = "/data"
+
     dataset = PGN_HDF_Dataset(data_path)
     timer.report(f"Intitialized dataset with {len(dataset):,} PGNs.")
 
