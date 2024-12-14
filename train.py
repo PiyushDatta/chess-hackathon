@@ -32,8 +32,7 @@ timer.report("Completed imports")
 def get_args_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-config", help="model config path", type=Path, default="/root/chess-hackathon/model_config.yaml")
-    # parser.add_argument("--save-dir", help="save checkpoint path", type=Path, default=os.getenv("OUTPUT_PATH"))
-    parser.add_argument("--save-dir", help="save checkpoint path", type=Path, default="/root/chess-hackathon/checkpoint.pt")
+    parser.add_argument("--save-dir", help="save checkpoint path", type=Path, default=os.getenv("OUTPUT_PATH"))
     parser.add_argument("--load-path", help="path to checkpoint.pt file to resume from", type=Path, default="/root/chess-hackathon/recover/checkpoint.pt")
     parser.add_argument("--bs", help="batch size", type=int, default=4)
     parser.add_argument("--lr", help="learning rate", type=float, default=0.001)
@@ -50,8 +49,7 @@ def main(args, timer):
     args.device_id = int(os.environ["LOCAL_RANK"])  # Rank on local node
     args.is_master = rank == 0  # Master node for saving / reporting
     torch.cuda.set_device(args.device_id)  # Enables calling 'cuda'
-    torch.autograd.set_detect_anomaly(True)
-    args.device_id = int(os.environ["LOCAL_RANK"])
+    torch.autograd.set_detect_anomaly(True) 
 
     if args.device_id == 0:
         hostname = socket.gethostname()
@@ -62,8 +60,7 @@ def main(args, timer):
     saver = AtomicDirectory(args.save_dir)
     timer.report("Validated checkpoint path")
 
-    # data_path = "/data"
-    data_path = "/data/gm"
+    data_path = "/data"
     dataset = PGN_HDF_Dataset(data_path)
     timer.report(f"Intitialized dataset with {len(dataset):,} PGNs.")
 
