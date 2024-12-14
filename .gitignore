@@ -131,6 +131,7 @@ env.bak/
 venv.bak/
 
 checkpoints/
+isc_outputs/
 
 # Spyder project settings
 .spyderproject

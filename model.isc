@@ -1,0 +1,12 @@
+isc_project_id = "8caa9de6-88e4-485d-8328-d975734cc06b"
+experiment_name = "chessGPT-piydatta"
+gpu_type = "24GB VRAM GPU"
+gpus = 48
+output_path = "/root/chess-hackathon/isc_outputs"
+dataset_id = "83f72080-4aee-445b-874f-7190d6880e13"
+compute_mode = "cycle"
+command = '''
+source /root/.chess/bin/activate && 
+cd /root/chess-hackathon/ && 
+torchrun --nnodes=$NNODES --nproc-per-node=$N_PROC --master_addr=$MASTER_ADDR --master_port=$MASTER_PORT --node_rank=$RANK 
+train.py'''

@@ -39,7 +39,7 @@ class MultiHeadSelfAttention(nn.Module):
     Assumes input with shape (batch_size, seq_len, embed_dim).
     If causal, causal mask is generated and applied.
     '''
-    def __init__(self, embed_dim=512, nhead=8, head_dim=64, rope=True, causal=True, ghost=False, device='cpu'):
+    def __init__(self, device, embed_dim=512, nhead=8, head_dim=64, rope=True, causal=True, ghost=False):
         super().__init__()
         self.nhead = nhead
         self.head_dim = head_dim
@@ -92,9 +92,10 @@ class FeedForward(nn.Module):
         return self.lin2(self.act(self.lin1(inputs)))
 
 class TransformerEncoderBlock(nn.Module):
-    def __init__(self, embed_dim=512, nhead=8, head_dim=64, ff_dim=2048, dropout=0.1, rope=True, causal=True, norm_first=False, ghost=False, device='cpu'):
+    def __init__(self, device, embed_dim=512, nhead=8, head_dim=64, ff_dim=2048, dropout=0.1, rope=True, causal=True, norm_first=False, ghost=False):
         super().__init__()
         self.norm_first = norm_first
+        self.device = device
         mhsa_params = {"embed_dim": embed_dim, "nhead": nhead, "head_dim": head_dim, "rope": rope, "causal": causal, "ghost": ghost, "device": device}
         self.self_attention = MultiHeadSelfAttention(**mhsa_params)
         self.norm1 = nn.LayerNorm(embed_dim)
@@ -113,7 +114,7 @@ class TransformerEncoderBlock(nn.Module):
 
 class Model(nn.Module):
     """Transformer Model"""
-    def __init__(self, nlayers=10, embed_dim=512, nhead=8, head_dim=64, ff_dim=2048, dropout=0.1, rope=True, causal=True, norm_first=False, ghost=False, device='cpu'):
+    def __init__(self, device, nlayers=10, embed_dim=512, nhead=8, head_dim=64, ff_dim=2048, dropout=0.1, rope=True, causal=True, norm_first=False, ghost=False):
         super().__init__()
         self.vocab = PGN_CHARS
         self.device = device
@@ -177,13 +178,18 @@ class Model(nn.Module):
         # encode single pgn and proposed move
         encoded_pgn = self.encode(pgn)
         encoded_move = self.encode(move)
-        inputs = torch.tensor(encoded_pgn + encoded_move).unsqueeze(0)
+        inputs = torch.tensor(encoded_pgn + encoded_move, device=self.device).unsqueeze(0)
+        # print(f"[DEBUG] Initial inputs device: {inputs.device}")
         # forward through the model
         inputs = self.embedder(inputs) # (batch_size, seq_len, embed_dim)
+        # print(f"[DEBUG] After embedder device: {inputs.device}")
         if self.pos_encoder:
             inputs = self.pos_encoder(inputs) # (batch_size, seq_len, embed_dim)
+            # print(f"[DEBUG] After pos_encoder device: {inputs.device}")
         inputs = self.encoder(inputs) # (batch, token, embed)
+        # print(f"[DEBUG] After encoder device: {inputs.device}")
         logits = self.decoder(inputs) # (batch, token, vocab)
+        # print(f"[DEBUG] After decoder device: {logits.device}")
         logits = logits[0] # batch size of 1 for scoring
         # decode probability for proposed move
         char_probabilities = []

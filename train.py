@@ -26,6 +26,7 @@ from utils.train_utils import topk_accuracy, softmax
 from utils.optimizers import Lamb
 from utils.datasets import PGN_HDF_Dataset
 from model import Model
+from mcts import MCTS
 
 timer.report("Completed imports")
 
@@ -34,13 +35,34 @@ def get_args_parser():
     parser.add_argument("--model-config", help="model config path", type=Path, default="/root/chess-hackathon/model_config.yaml")
     parser.add_argument("--save-dir", help="save checkpoint path", type=Path, default=os.getenv("OUTPUT_PATH"))
     parser.add_argument("--load-path", help="path to checkpoint.pt file to resume from", type=Path, default="/root/chess-hackathon/recover/checkpoint.pt")
-    parser.add_argument("--bs", help="batch size", type=int, default=4)
-    parser.add_argument("--lr", help="learning rate", type=float, default=0.001)
+    parser.add_argument("--bs", help="batch size", type=int, default=1)
+    parser.add_argument("--lr", help="learning rate", type=float, default=0.01)
     parser.add_argument("--wd", help="weight decay", type=float, default=0.01)
     parser.add_argument("--ws", help="learning rate warm up steps", type=int, default=1000)
     parser.add_argument("--grad-accum", help="gradient accumulation steps", type=int, default=10)
-    parser.add_argument("--save-steps", help="saving interval steps", type=int, default=100)
+    parser.add_argument("--save-steps", help="saving interval steps", type=int, default=20)
     return parser
+
+def augment_pgn_with_mcts(pgn_batch, mcts_moves):
+    augmented_pgn_batch = []
+    for pgn, move in zip(pgn_batch, mcts_moves):
+        # Split the PGN to get the moves and the result
+        moves_and_result = pgn.split('{')[0]
+        moves_and_result = moves_and_result.strip()
+        moves_and_result = moves_and_result.split(' ')
+        result = moves_and_result[-1]
+        # All moves except the result
+        moves = ' '.join(moves_and_result[:-1])  
+        moves = moves.strip()
+        # To determine the current move number
+        # Each move is split by space, so count half for the move number
+        move_number = len(moves.split()) // 2
+        # Insert the MCTS move with the correct move number
+        mcts_move_with_number = f"{move_number + 1}.{move}"
+        # Construct the augmented PGN: add the MCTS move and then append the result
+        augmented_pgn = f"{moves} {mcts_move_with_number} {result}"
+        augmented_pgn_batch.append(augmented_pgn)
+    return augmented_pgn_batch
 
 def main(args, timer):
     dist.init_process_group("nccl")  # Expects RANK set in environment variable
@@ -68,7 +90,6 @@ def main(args, timer):
     saver = AtomicDirectory(args.save_dir)
     timer.report("Validated checkpoint path")
 
-    data_path = "/data"
     dataset = PGN_HDF_Dataset(data_path)
     timer.report(f"Intitialized dataset with {len(dataset):,} PGNs.")
 
@@ -128,6 +149,8 @@ def main(args, timer):
             train_steps_per_epoch = math.ceil(train_batches_per_epoch / args.grad_accum)
             optimizer.zero_grad()
             model.train()
+            model.compile()
+            mcts = MCTS(model, device=f"cuda:{args.device_id}", num_simulations=10)
 
             for pgn_batch in train_dataloader:
 
@@ -141,7 +164,11 @@ def main(args, timer):
                 if (is_save_batch or is_last_batch) and args.is_master:
                     checkpoint_directory = saver.prepare_checkpoint_directory()
 
-                logits, targets, target_pad_mask = model(pgn_batch)
+                mcts_moves = mcts.select_best_moves(pgn_batch)
+                # Augment the PGN batch with MCTS moves
+                augmented_pgn_batch = augment_pgn_with_mcts(pgn_batch, mcts_moves)
+                # print(f"BATCH\npgn_batch:{pgn_batch}\nmcts_moves:{mcts_moves}\naugmented_pgn_batch:{augmented_pgn_batch}\n")
+                logits, targets, target_pad_mask = model(augmented_pgn_batch)
                 
                 flat_logits = logits.flatten(end_dim=1)
                 flat_targets = targets.flatten()
