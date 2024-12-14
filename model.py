@@ -1,9 +1,11 @@
 import torch
 import torch.nn as nn
 import math
+import os
 from collections import OrderedDict
 
 PGN_CHARS = " #+-./0123456789:=BKLNOQRabcdefghx{}*"
+os.environ['TORCH_CUDNN_SDPA_ENABLED'] = '1'
 
 def softmax(x, dim=-1, temp=1, ghost=None):
     z = torch.exp((x - torch.max(x, dim=dim, keepdim=True).values) / temp)
@@ -12,7 +14,7 @@ def softmax(x, dim=-1, temp=1, ghost=None):
         z_sum += ghost.view(1, -1, 1, 1)
     return z / z_sum
 
-def multihead_cross_attention(Q, K, V, rope_encoder=None, mask=None, ghost=None, device='cpu'):
+def multihead_cross_attention(Q, K, V, rope_encoder=None, mask=None, ghost=None, device='cpu', use_flash_attention=True):
     '''
     Accepts input of Q, K, V each with shape (batch_size, nhead, seq_len, head_dim),
     or more generally with shape (..., seq_len, head_dim).
@@ -25,6 +27,19 @@ def multihead_cross_attention(Q, K, V, rope_encoder=None, mask=None, ghost=None,
         Q = rope_encoder(Q)
         K = rope_encoder(K)
 
+    if use_flash_attention and device != 'cpu':
+        # Using PyTorch Flash Attention
+        with torch.backends.cuda.sdp_kernel(
+            enable_flash=True,
+            enable_math=False,
+            enable_mem_efficient=False
+        ):
+            out = torch.nn.functional.scaled_dot_product_attention(
+                Q, K, V,
+                attn_mask=mask
+            )
+        return out
+    
     QKT = torch.einsum('...Qe,...Ke->...QK', Q, K) / math.sqrt(head_dim)
 
     if isinstance(mask, torch.Tensor):
@@ -39,14 +54,15 @@ class MultiHeadSelfAttention(nn.Module):
     Assumes input with shape (batch_size, seq_len, embed_dim).
     If causal, causal mask is generated and applied.
     '''
-    def __init__(self, device, embed_dim=512, nhead=8, head_dim=64, rope=True, causal=True, ghost=False):
+    def __init__(self, device, embed_dim=512, nhead=8, head_dim=64, rope=True, causal=True, ghost=False, dropout=0.0):
         super().__init__()
         self.nhead = nhead
         self.head_dim = head_dim
         self.causal = causal
         self.ghost = ghost
         self.device = device
-        
+        self.dropout = dropout
+
         # ghost is one learnable param per attention head
         self.ghost = nn.parameter.Parameter(data=torch.zeros(nhead)) if ghost else None
         self.Wqkv = nn.Linear(embed_dim, 3 * nhead * head_dim)
@@ -69,7 +85,7 @@ class MultiHeadSelfAttention(nn.Module):
         QKV = self.Wqkv(inputs)
         QKVh = QKV.reshape(batch_size, seq_len, 3, self.nhead, self.head_dim).transpose(1, 3)
         Q, K, V = [t.squeeze(2) for t in QKVh.split(1, 2)] # squeezing out the projection dimension only
-        A = multihead_cross_attention(Q, K, V, self.rope_encoder, mask, self.ghost, self.device)
+        A = multihead_cross_attention(Q, K, V, self.rope_encoder, mask, self.ghost, self.device, use_flash_attention=False)
         A = A.transpose(1, 2).reshape(batch_size, seq_len, -1)
         outputs = self.Wo(A)
         return outputs
@@ -127,6 +143,20 @@ class Model(nn.Module):
         self.decoder = nn.Linear(embed_dim, len(self.vocab))
         self.init_weights()
         torch.set_float32_matmul_precision('high')
+        # Compile the model
+        self.compile()
+
+    def compile(self):
+        """
+        Compile the model using torch.compile for performance optimization
+        """
+        try:
+            # Attempt to compile the entire model
+            self = torch.compile(self, mode='max-autotune')
+            print("Model successfully compiled with torch.compile")
+        except Exception as e:
+            print(f"Model compilation failed: {e}")
+            print("Falling back to standard model execution")
 
     def init_weights(self):
         initrange = 0.1

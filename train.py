@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, random_split
+# from torch.cuda.amp import GradScaler, autocast
 from pathlib import Path
 import argparse
 import os
@@ -36,10 +37,10 @@ def get_args_parser():
     parser.add_argument("--save-dir", help="save checkpoint path", type=Path, default=os.getenv("OUTPUT_PATH"))
     parser.add_argument("--load-path", help="path to checkpoint.pt file to resume from", type=Path, default="/root/chess-hackathon/recover/checkpoint.pt")
     parser.add_argument("--bs", help="batch size", type=int, default=1)
-    parser.add_argument("--lr", help="learning rate", type=float, default=0.01)
+    parser.add_argument("--lr", help="learning rate", type=float, default=0.001)
     parser.add_argument("--wd", help="weight decay", type=float, default=0.01)
     parser.add_argument("--ws", help="learning rate warm up steps", type=int, default=1000)
-    parser.add_argument("--grad-accum", help="gradient accumulation steps", type=int, default=10)
+    parser.add_argument("--grad-accum", help="gradient accumulation steps", type=int, default=20)
     parser.add_argument("--save-steps", help="saving interval steps", type=int, default=20)
     return parser
 
@@ -142,6 +143,7 @@ def main(args, timer):
         timer.start_time = time.time()
         timer.report("Retrieved saved checkpoint")
 
+    step = 0
     for epoch in range(train_dataloader.sampler.epoch, 10_000):
         with train_dataloader.sampler.in_epoch(epoch):
             timer.report(f"Training epoch {epoch}")
@@ -149,19 +151,19 @@ def main(args, timer):
             train_steps_per_epoch = math.ceil(train_batches_per_epoch / args.grad_accum)
             optimizer.zero_grad()
             model.train()
-            model.compile()
-            mcts = MCTS(model, timer=timer, device=f"cuda:{args.device_id}", num_simulations=10)
-
+            # scaler = GradScaler()
             for pgn_batch in train_dataloader:
-
+                step += 1
+                mcts = MCTS(model, timer=timer, device=f"cuda:{args.device_id}", num_simulations=10)
                 # Determine the current step
                 batch = train_dataloader.sampler.progress // train_dataloader.batch_size
                 is_save_batch = (batch + 1) % args.save_steps == 0
                 is_accum_batch = (batch + 1) % args.grad_accum == 0
                 is_last_batch = (batch + 1) == train_batches_per_epoch
+                is_last_step = (step + 1) % args.save_steps == 0
 
                 # Prepare checkpoint directory
-                if (is_save_batch or is_last_batch) and args.is_master:
+                if (is_last_step or is_save_batch or is_last_batch) and args.is_master:
                     checkpoint_directory = saver.prepare_checkpoint_directory()
 
                 # timer.report("MCTS making moves")
@@ -172,14 +174,17 @@ def main(args, timer):
                 # timer.report(f"Augmented board: {augmented_pgn_batch}")
                 # print(f"BATCH\npgn_batch:{pgn_batch}\nmcts_moves:{mcts_moves}\naugmented_pgn_batch:{augmented_pgn_batch}\n")
                 # timer.report("Having model predict moves based on augmented pgn batch")
+                # with autocast():
                 logits, targets, target_pad_mask = model(augmented_pgn_batch)
-                
                 flat_logits = logits.flatten(end_dim=1)
                 flat_targets = targets.flatten()
                 flat_mask = torch.logical_not(target_pad_mask.flatten())
                 loss = loss_fn(flat_logits, flat_targets) * flat_mask
                 loss = loss.sum() / args.grad_accum
 
+                # scaler.scale(loss).backward()
+                # scaler.step(optimizer)
+                # scaler.update()
                 loss.backward()
                 train_dataloader.sampler.advance(len(pgn_batch))
 
@@ -197,8 +202,10 @@ def main(args, timer):
                     "uncertainty": total_prediction_entropy.item()
                 })
 
-                if is_accum_batch or is_last_batch:
-                    optimizer.step()
+                if is_last_step or is_accum_batch or is_last_batch:
+                    # scaler.step(optimizer)
+                    # scaler.update()
+                    # optimizer.step()
                     optimizer.zero_grad()
                     step = batch // args.grad_accum
                     
@@ -221,7 +228,8 @@ Uncertainty: [{rpt_uncertainty:,.3f}], Tokens: {rpt['gen_tokens']:,.0f}"""
                     metrics["train"].reset_local()
 
                 # Saving
-                if (is_save_batch or is_last_batch) and args.is_master:
+                if (is_last_step or is_save_batch or is_last_batch) and args.is_master:
+                    timer.report(f"Saving checkpoint in {checkpoint_directory}/checkpoint.pt")
                     # Save checkpoint
                     atomic_torch_save(
                         {

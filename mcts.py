@@ -94,9 +94,16 @@ class MCTS:
         """
         try:
             move = chess.Move.from_uci(uci_move)
+            if not board.is_legal(move):
+                legal_moves = list(board.legal_moves)
+                # Pick a random legal move
+                move = random.choice(legal_moves)  
+                # print(f"Illegal move: {uci_move}. Choosing random legal move: {move.uci()}")
             return board.san(move)
         except Exception as e:
-            print(f"Error converting UCI to SAN: {e}")
+            print(f"Error converting UCI to SAN:\n{e}")
+            # print(f"Board:\n{board}")
+            # print(f"uci_move:\n{uci_move}")
             return uci_move
 
     def _get_stockfish_engine(self) -> SimpleEngine:
