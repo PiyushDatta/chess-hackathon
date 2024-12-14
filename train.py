@@ -59,7 +59,9 @@ def main(args, timer):
     timer.report("Setup for distributed training")
 
     if local_gpu:
-        args.save_dir = "/root/chess-hackathon/checkpoint.pt"
+        args.save_dir = "/root/chess-hackathon/checkpoints"
+        args.load_path = "/root/chess-hackathon/checkpoints/latest_pt"
+
     saver = AtomicDirectory(args.save_dir)
     timer.report("Validated checkpoint path")
 
