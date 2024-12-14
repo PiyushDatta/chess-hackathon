@@ -81,6 +81,24 @@ class MCTS:
         self.stockfish_engine = None
         self.timer = timer
 
+    def _uci_to_san(self, board: chess.Board, uci_move: str) -> str:
+        """
+        Convert a UCI move to Standard Algebraic Notation (SAN)
+
+        Args:
+            board (chess.Board): Current chess board state
+            uci_move (str): Move in UCI format
+
+        Returns:
+            str: Move in Standard Algebraic Notation
+        """
+        try:
+            move = chess.Move.from_uci(uci_move)
+            return board.san(move)
+        except Exception as e:
+            print(f"Error converting UCI to SAN: {e}")
+            return uci_move
+
     def _get_stockfish_engine(self) -> SimpleEngine:
         """
         Lazily initialize Stockfish engine
@@ -124,8 +142,17 @@ class MCTS:
         best_moves = []
         for pgn in pgn_batch:
             try:
-                best_move = self.select_best_move(pgn)
-                best_moves.append(best_move)
+                # Get the current board state
+                game = chess.pgn.read_game(io.StringIO(pgn))
+                board = game.board()
+                # Select best move
+                uci_best_move = self.select_best_move(pgn)
+                # Convert UCI to SAN
+                if uci_best_move:
+                    san_best_move = self._uci_to_san(board, uci_best_move)
+                    best_moves.append(san_best_move)
+                else:
+                    best_moves.append(None)
             except Exception as e:
                 print(f"Move selection error for PGN {pgn}: {e}")
                 best_moves.append(self._fallback_move(pgn))

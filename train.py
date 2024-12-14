@@ -169,6 +169,7 @@ def main(args, timer):
                 # Augment the PGN batch with MCTS moves
                 # timer.report(f"Augmenting moves {mcts_moves} to pgn batch")
                 augmented_pgn_batch = augment_pgn_with_mcts(pgn_batch, mcts_moves)
+                # timer.report(f"Augmented board: {augmented_pgn_batch}")
                 # print(f"BATCH\npgn_batch:{pgn_batch}\nmcts_moves:{mcts_moves}\naugmented_pgn_batch:{augmented_pgn_batch}\n")
                 # timer.report("Having model predict moves based on augmented pgn batch")
                 logits, targets, target_pad_mask = model(augmented_pgn_batch)
