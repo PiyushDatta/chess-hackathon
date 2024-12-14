@@ -113,6 +113,7 @@ def play_game(agents, teams, max_moves=float('inf'), min_seconds_per_move=2, ver
     game_result = {'white': {'moves': [], 'points': 0}, 'black': {'moves': [], 'points': 0}, 'all_moves': [(board, None)]}
 
     # Play a game until game over.
+    cnt = 0
     while True:
 
         start = time.perf_counter()
