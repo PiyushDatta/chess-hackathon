@@ -126,6 +126,7 @@ class Model(nn.Module):
         self.encoder = nn.Sequential(layers)
         self.decoder = nn.Linear(embed_dim, len(self.vocab))
         self.init_weights()
+        torch.set_float32_matmul_precision('high')
 
     def init_weights(self):
         initrange = 0.1

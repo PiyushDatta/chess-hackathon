@@ -3,11 +3,10 @@ import random
 import torch
 import torch.nn.functional as F
 import io
+import chess
 import chess.pgn
-from chess import Board
 from chess.engine import SimpleEngine, Limit
-from tqdm import tqdm
-from utils.data_utils import score_possible_boards
+from typing import List, Optional
 
 STOCKFISH_PATH = "/root/chess-hackathon/utils/stockfish"
 
@@ -17,159 +16,276 @@ class MCTSNode:
         self.pgn = pgn
         self.parent = parent
         self.move = move
-        self.children = []
+        self.children: List[MCTSNode] = []
         self.visits = 0
         self.total_score = torch.tensor(0.0, device=device)
         self.device = device
 
-    def add_child(self, child_pgn, move):
-        child_node = MCTSNode(child_pgn, device=self.device, parent=self, move=move)
+    def add_child(self, child_pgn: str, move: str) -> "MCTSNode":
+        """
+        Create and add a child node to this node
+
+        Args:
+            child_pgn (str): PGN string for the child node
+            move (str): Move that led to this child node
+
+        Returns:
+            MCTSNode: The newly created child node
+        """
+        child_node = MCTSNode(pgn=child_pgn, device=self.device, parent=self, move=move)
         self.children.append(child_node)
         return child_node
 
-    def uct_score(self, exploration_weight=1.0):
+    def uct_score(self, exploration_weight: float = 1.0) -> float:
+        """
+        Calculate the Upper Confidence Bound (UCT) score for this node
+
+        Args:
+            exploration_weight (float): Controls exploration vs exploitation
+
+        Returns:
+            float: UCT score
+        """
+        # Handle the case of unvisited node
         if self.visits == 0:
             return float("inf")
-        parent_visits = self.parent.visits
-        visits = self.visits
-        # Check if both are scalars
-        if isinstance(parent_visits, torch.Tensor):
-            parent_visits = parent_visits.item()
-        if isinstance(visits, torch.Tensor):
-            visits = visits.item()
-        # Compute the exploration term
-        exploration_term = exploration_weight * torch.sqrt(
-            torch.log(
-                torch.tensor(parent_visits, dtype=torch.float32, device=self.device)
-            )
-            / visits
+
+        # Ensure we're working with scalar values
+        parent_visits = self.parent.visits if self.parent else 1
+        visits = max(self.visits, 1)
+
+        # Compute exploitation term (average score)
+        exploitation_term = (self.total_score / visits).item()
+
+        # Compute exploration term
+        exploration_term = exploration_weight * math.sqrt(
+            math.log(parent_visits) / visits
         )
-        return (self.total_score / visits) + exploration_term.item()
+
+        return exploitation_term + exploration_term
 
 
 class MCTS:
-    def __init__(self, model, device, num_simulations=50):
+    def __init__(self, model, timer, device, num_simulations: int = 50):
+        """
+        Initialize Monte Carlo Tree Search
+
+        Args:
+            model: Scoring model for evaluating positions
+            device: Computational device (CPU/GPU)
+            num_simulations: Number of MCTS simulations per move
+        """
         self.device = device
         self.model = model
         self.num_simulations = num_simulations
+        self.stockfish_engine = None
+        self.timer = timer
 
-    def select_best_moves(self, pgn_batch):
+    def _get_stockfish_engine(self) -> SimpleEngine:
         """
-        Select best moves for an entire batch of PGNs
+        Lazily initialize Stockfish engine
+
+        Returns:
+            SimpleEngine: Stockfish chess engine
+        """
+        if self.stockfish_engine is None:
+            self.stockfish_engine = SimpleEngine.popen_uci(STOCKFISH_PATH)
+        return self.stockfish_engine
+
+    def _fallback_move(self, pgn: str) -> Optional[str]:
+        """
+        Generate a fallback legal move when MCTS fails
+
+        Args:
+            pgn (str): Game PGN
+
+        Returns:
+            Optional[str]: UCI move or None
+        """
+        try:
+            game = chess.pgn.read_game(io.StringIO(pgn))
+            board = game.board()
+            legal_moves = list(board.legal_moves)
+            return legal_moves[0].uci() if legal_moves else None
+        except Exception as e:
+            print(f"Fallback move generation error: {e}")
+            return None
+
+    def select_best_moves(self, pgn_batch: List[str]) -> List[Optional[str]]:
+        """
+        Select best moves for a batch of PGNs
+
+        Args:
+            pgn_batch (List[str]): Batch of PGN strings
+
+        Returns:
+            List[Optional[str]]: Best moves for each PGN
         """
         best_moves = []
         for pgn in pgn_batch:
-            # Extract the initial state or first few moves
-            best_move = self.select_best_move(pgn)
-            best_moves.append(best_move)
+            try:
+                best_move = self.select_best_move(pgn)
+                best_moves.append(best_move)
+            except Exception as e:
+                print(f"Move selection error for PGN {pgn}: {e}")
+                best_moves.append(self._fallback_move(pgn))
         return best_moves
 
-    def select_best_move(self, current_pgn):
+    def select_best_move(self, current_pgn: str) -> Optional[str]:
+        """
+        Select the best move for a given PGN using MCTS
+
+        Args:
+            current_pgn (str): Current game state PGN
+
+        Returns:
+            Optional[str]: Best move in UCI format
+        """
         root = MCTSNode(current_pgn, device=self.device)
 
         for _ in range(self.num_simulations):
-            # Selection
-            node = self._select(root)
-            # Expansion
-            expanded_node = self._expand(node)
-            # Simulation (Rollout)
-            score = self._simulate(expanded_node)
-            # Backpropagation
-            self._backpropagate(expanded_node, score)
+            # Selection phase
+            leaf_node = self._select(root)
+
+            # Expansion phase
+            expanded_node = self._expand(leaf_node)
+
+            # Simulation phase
+            if expanded_node:
+                score = self._simulate(expanded_node)
+
+                # Backpropagation phase
+                self._backpropagate(expanded_node, score)
 
         # Choose the best child based on visits
         if not root.children:
-            return None  # No moves found
+            print("No moves generated. Using fallback.")
+            return self._fallback_move(current_pgn)
+
         best_child = max(root.children, key=lambda child: child.visits)
         return best_child.move
 
-    def _select(self, node):
-        # Select child with best UCT score
+    def _select(self, node: MCTSNode) -> MCTSNode:
+        """
+        Select the most promising node for expansion
+
+        Args:
+            node (MCTSNode): Starting node for selection
+
+        Returns:
+            MCTSNode: Selected leaf node
+        """
         while node.children:
+            # If no children can be selected, break
+            if not node.children:
+                break
+
+            # Select child with best UCT score
             node = max(node.children, key=lambda child: child.uct_score())
+
         return node
 
-    def _expand(self, node):
-        # Generate possible moves
-        move_candidates = self._generate_move_candidates(node.pgn)
-        # Expand children with these moves
+    def _expand(self, node: MCTSNode) -> Optional[MCTSNode]:
+        """
+        Expand the selected node by generating child nodes
+
+        Args:
+            node (MCTSNode): Node to expand
+
+        Returns:
+            Optional[MCTSNode]: First expanded child node
+        """
+        # Generate move candidates
+        try:
+            move_candidates = self._generate_move_candidates(node.pgn)
+        except Exception as e:
+            print(f"Move generation error: {e}")
+            return None
+
+        # If no move candidates, return None
+        if not move_candidates:
+            return None
+
+        # Create child nodes for each move candidate
         for move in move_candidates:
-            new_pgn = node.pgn + " " + move
+            new_pgn = f"{node.pgn} {move}"
             node.add_child(new_pgn, move)
-        # Return first child if available
-        return node.children[0] if node.children else node
+
+        # Return the first child node
+        return node.children[0] if node.children else None
 
     def _generate_move_candidates(
-        self, pgn, depth_limt=15, time_limit=2, topk=None, verbose=False
-    ):
+        self,
+        pgn: str,
+        depth_limit: int = 5,
+        time_limit: int = 1,
+        topk: Optional[int] = None,
+    ) -> List[str]:
         """
-        Accepts pgn in the following format (or a format that can be parsed as follows):
-        "1.Nc3 d5 2.d4 c6 3.a3 Nf6 4.Bf4 Bf5 5.Nf3 Nh5 6.h4 Nxf4 7.h5 0-1 {OL: 0}"
-        Returns array of scored boards (N, 8, 8) and board scores (N,)
+        Generate candidate moves for a given PGN
+
+        Args:
+            pgn (str): Current game state PGN
+            depth_limit (int): Stockfish search depth
+            time_limit (int): Stockfish time limit
+            topk (Optional[int]): Limit number of candidate moves
+
+        Returns:
+            List[str]: List of UCI move candidates
         """
-        engine = SimpleEngine.popen_uci(STOCKFISH_PATH)
+        # Use Stockfish to generate candidate moves
+        engine = self._get_stockfish_engine()
         game = chess.pgn.read_game(io.StringIO(pgn))
-        board = Board()
-        move_candidates = []
+        board = game.board()
 
-        # Evaluate the initial position
-        _legal_moves, _legal_move_sans, possible_boards, scores = score_possible_boards(
-            board, engine, depth_limt=depth_limt, time_limit=time_limit, topk=topk
-        )
-        for move in (
-            tqdm(list(game.mainline_moves()))
-            if verbose
-            else list(game.mainline_moves())
-        ):
+        # Push existing moves to the board
+        for move in game.mainline_moves():
             board.push(move)
-            _legal_moves, _legal_move_sans, possible_boards, scores = (
-                score_possible_boards(
-                    board,
-                    engine,
-                    depth_limt=depth_limt,
-                    time_limit=time_limit,
-                    topk=topk,
-                )
-            )
-            move_candidates.extend([move.uci() for move in _legal_moves])
-        # return np.array(scored_boards), np.array(board_scores)
-        # board = chess.Board(pgn)
-        # game = chess.pgn.read_game(io.StringIO(pgn))
-        # board = game.board()
-        # move_candidates = [move.uci() for move in _legal_moves]
-        return move_candidates
-        # # Extract the last move or game state
-        # last_move = pgn.split()[-1] if pgn else ""
-        # # Generate some arbitrary move candidates
-        # # In a real implementation, this should use chess rules
-        # candidates = []
-        # for piece in ["N", "B", "R", "Q", "K"]:
-        #     for file in "abcdefgh":
-        #         for rank in "12345678":
-        #             move = f"{piece}{file}{rank}"
-        #             candidates.append(move)
 
-        # return candidates[:10]  # Limit the number of candidates
+        # Get legal moves
+        legal_moves = list(board.legal_moves)
 
-    def _simulate(self, node):
+        # Convert to UCI format and limit if needed
+        move_candidates = [move.uci() for move in legal_moves]
+        return move_candidates[:topk] if topk else move_candidates
+
+    def _simulate(self, node: MCTSNode) -> float:
         """
-        Simulate by evaluating the move using the model's scoring method.
+        Simulate the value of a node
+
+        Args:
+            node (MCTSNode): Node to evaluate
+
+        Returns:
+            float: Simulation score
         """
         try:
-            score = self.model.module.score(node.pgn, node.move)
-            # print("SCORE:")
-            # print(score)
-            # exit(1)
-            return score
+            return self.model.module.score(node.pgn, node.move)
         except Exception as e:
             print(f"Simulation error: {e}")
             return 0.0
 
-    def _backpropagate(self, node, score):
-        score = torch.tensor(
-            score, device=self.device
-        )  # Ensure score is on the correct device
+    def _backpropagate(self, node: MCTSNode, score: float):
+        """
+        Backpropagate the simulation score
+
+        Args:
+            node (MCTSNode): Starting node for backpropagation
+            score (float): Simulation score
+        """
+        score_tensor = torch.tensor(score, device=self.device)
+
         while node:
             node.visits += 1
-            node.total_score += score
+            node.total_score += score_tensor
             node = node.parent
+
+    def __del__(self):
+        """
+        Clean up Stockfish engine on object deletion
+        """
+        if hasattr(self, "stockfish_engine") and self.stockfish_engine:
+            try:
+                self.stockfish_engine.quit()
+            except Exception as e:
+                print(f"Error closing Stockfish engine: {e}")

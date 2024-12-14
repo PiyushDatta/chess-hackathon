@@ -150,7 +150,7 @@ def main(args, timer):
             optimizer.zero_grad()
             model.train()
             model.compile()
-            mcts = MCTS(model, device=f"cuda:{args.device_id}", num_simulations=10)
+            mcts = MCTS(model, timer=timer, device=f"cuda:{args.device_id}", num_simulations=10)
 
             for pgn_batch in train_dataloader:
 
@@ -164,10 +164,13 @@ def main(args, timer):
                 if (is_save_batch or is_last_batch) and args.is_master:
                     checkpoint_directory = saver.prepare_checkpoint_directory()
 
+                # timer.report("MCTS making moves")
                 mcts_moves = mcts.select_best_moves(pgn_batch)
                 # Augment the PGN batch with MCTS moves
+                # timer.report(f"Augmenting moves {mcts_moves} to pgn batch")
                 augmented_pgn_batch = augment_pgn_with_mcts(pgn_batch, mcts_moves)
                 # print(f"BATCH\npgn_batch:{pgn_batch}\nmcts_moves:{mcts_moves}\naugmented_pgn_batch:{augmented_pgn_batch}\n")
+                # timer.report("Having model predict moves based on augmented pgn batch")
                 logits, targets, target_pad_mask = model(augmented_pgn_batch)
                 
                 flat_logits = logits.flatten(end_dim=1)
