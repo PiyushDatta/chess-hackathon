@@ -33,11 +33,11 @@ def get_args_parser():
     parser.add_argument("--model-config", help="model config path", type=Path, default="/root/chess-hackathon/model_config.yaml")
     parser.add_argument("--save-dir", help="save checkpoint path", type=Path, default=os.environ.get("OUTPUT_PATH"))
     parser.add_argument("--load-path", help="path to checkpoint.pt file to resume from", type=Path, default="/root/chess-hackathon/recover/checkpoint.pt")
-    parser.add_argument("--bs", help="batch size", type=int, default=4)
+    parser.add_argument("--bs", help="batch size", type=int, default=64)
     parser.add_argument("--lr", help="learning rate", type=float, default=0.001)
     parser.add_argument("--wd", help="weight decay", type=float, default=0.01)
     parser.add_argument("--ws", help="learning rate warm up steps", type=int, default=1000)
-    parser.add_argument("--grad-accum", help="gradient accumulation steps", type=int, default=10)
+    parser.add_argument("--grad-accum", help="gradient accumulation steps", type=int, default=6)
     parser.add_argument("--save-steps", help="saving interval steps", type=int, default=100)
     return parser
 
@@ -62,7 +62,7 @@ def spearmans_rho(a, b):
 def main(args, timer):
     dist.init_process_group("nccl")  # Expects RANK set in environment variable
     rank = int(os.environ["RANK"])  # Rank of this GPU in cluster
-    world_size = int(os.environ["WORLD_SIZE"]) # Total number of GPUs in the cluster
+    args.world_size = int(os.environ["WORLD_SIZE"]) # Total number of GPUs in the cluster
     args.device_id = int(os.environ["LOCAL_RANK"])  # Rank on local node
     args.is_master = rank == 0  # Master node for saving / reporting
     torch.cuda.set_device(args.device_id)  # Enables calling 'cuda'
@@ -182,7 +182,7 @@ def main(args, timer):
                     metrics["train"].reduce()
                     rpt = metrics["train"].local
                     avg_loss = rpt["accum_loss"] / rpt["examples_seen"]
-                    rpt_rank_corr = 100 * rpt["rank_corr"] / rpt["examples_seen"]
+                    rpt_rank_corr = 100 * rpt["rank_corr"] / (args.grad_accum * args.world_size)
                     report = f"""\
 Epoch [{epoch:,}] Step [{step:,} / {train_steps_per_epoch:,}] Batch [{batch:,} / {train_batches_per_epoch:,}] Lr: [{lr_factor * args.lr:,.3}], \
 Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Examples: {rpt['examples_seen']:,.0f}"""
@@ -244,7 +244,7 @@ Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Examples: {rpt[
                             metrics["test"].reduce()
                             rpt = metrics["test"].local
                             avg_loss = rpt["accum_loss"] / rpt["examples_seen"]
-                            rpt_rank_corr = 100 * rpt["rank_corr"] / rpt["examples_seen"]
+                            rpt_rank_corr = 100 * rpt["rank_corr"] / (test_batches_per_epoch * args.world_size)
                             report = f"Epoch [{epoch}] Evaluation, Avg Loss [{avg_loss:,.3f}], Rank Corr. [{rpt_rank_corr:,.3f}%]"
                             timer.report(report)
                         
