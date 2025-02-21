@@ -28,15 +28,15 @@ ignore = """
 # agents = {'white': chg.Agent(), 'black': chg.Agent()}
 
 # Agents with torch models
-agents = {'white': chg.Agent(model), 'black': chg.Agent(model)}
+agents = {"white": chg.Agent(model), "black": chg.Agent(model)}
 
-teams = {'white': 'Team White', 'black': 'Team Black'}
+teams = {"white": "Team White", "black": "Team Black"}
 game_result = chg.play_game(
-    agents, 
-    teams, 
-    max_moves=10, 
-    min_seconds_per_move=2, 
-    verbose=True, 
-    poseval=True, 
-    image_path="demo.png"
+    agents,
+    teams,
+    max_moves=5,
+    min_seconds_per_move=0,
+    verbose=True,
+    poseval=True,
+    image_path="demo.png",
 )
