@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, random_split
+from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
 import argparse
 import os
@@ -38,13 +39,12 @@ def get_args_parser():
     parser.add_argument("--wd", help="weight decay", type=float, default=0.01)
     parser.add_argument("--ws", help="learning rate warm up steps", type=int, default=1000)
     parser.add_argument("--grad-accum", help="gradient accumulation steps", type=int, default=6)
-    parser.add_argument("--save-steps", help="saving interval steps", type=int, default=100)
+    parser.add_argument("--save-steps", help="saving interval steps", type=int, default=50)
     return parser
 
 def logish_transform(data):
     '''Zero-symmetric log-transformation.'''
-    reflector = -1 * (data < 0).to(torch.int8)
-    return reflector * torch.log(torch.abs(data) + 1)
+    return torch.sign(data) * torch.log1p(torch.abs(data))
 
 def spearmans_rho(a, b):
     '''Spearman's rank correlation coefficient'''
@@ -74,15 +74,14 @@ def main(args, timer):
         print(f"TrainConfig: {args}")
     timer.report("Setup for distributed training")
 
-    saver = AtomicDirectory(args.save_dir)
+    saver = AtomicDirectory(output_directory=args.save_dir, is_master=args.is_master)
     timer.report("Validated checkpoint path")
 
     data_path = "/data"
     dataset = EVAL_HDF_Dataset(data_path)
-    timer.report(f"Intitialized dataset with {len(dataset):,} Board Evaluations.")
-
     random_generator = torch.Generator().manual_seed(42)
     train_dataset, test_dataset = random_split(dataset, [0.8, 0.2], generator=random_generator)
+    timer.report(f"Intitialized datasets with {len(train_dataset):,} training and {len(test_dataset):,} test board evaluations.")
 
     train_sampler = InterruptableDistributedSampler(train_dataset)
     test_sampler = InterruptableDistributedSampler(test_dataset)
@@ -104,9 +103,12 @@ def main(args, timer):
     model = DDP(model, device_ids=[args.device_id])
     timer.report("Prepared model for distributed training")
 
-    loss_fn = nn.MSELoss()
+    loss_fn = nn.MSELoss(reduction="sum")
     optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=args.wd)
     metrics = {"train": MetricsTracker(), "test": MetricsTracker()}
+
+    if args.is_master:
+        writer = SummaryWriter(log_dir=os.path.join(args.save_dir, "tb"))
 
     checkpoint_path = None
     local_resume_path = os.path.join(args.save_dir, saver.symlink_name)
@@ -154,8 +156,7 @@ def main(args, timer):
                 boards, scores = boards.to(args.device_id), scores.to(args.device_id)
 
                 logits = model(boards)
-                loss = loss_fn(logits, scores)
-                loss = loss / args.grad_accum
+                loss = loss_fn(logits, scores) / args.grad_accum
 
                 loss.backward()
                 train_dataloader.sampler.advance(len(scores))
@@ -165,7 +166,7 @@ def main(args, timer):
 
                 metrics["train"].update({
                     "examples_seen": len(scores),
-                    "accum_loss": loss.item() * args.grad_accum, 
+                    "accum_loss": loss.item() * args.grad_accum, # undo loss scale
                     "rank_corr": rank_corr
                 })
 
@@ -176,18 +177,25 @@ def main(args, timer):
                     
                     # learning rate warmup
                     lr_factor = min((epoch * train_steps_per_epoch + step) / args.ws, 1)
+                    next_lr = lr_factor * args.lr
                     for g in optimizer.param_groups:
-                        g['lr'] = lr_factor * args.lr
+                        g['lr'] = next_lr
                     
                     metrics["train"].reduce()
                     rpt = metrics["train"].local
                     avg_loss = rpt["accum_loss"] / rpt["examples_seen"]
-                    rpt_rank_corr = 100 * rpt["rank_corr"] / (args.grad_accum * args.world_size)
+                    rpt_rank_corr = 100 * rpt["rank_corr"] / ((batch % args.grad_accum + 1) * args.world_size)
                     report = f"""\
 Epoch [{epoch:,}] Step [{step:,} / {train_steps_per_epoch:,}] Batch [{batch:,} / {train_batches_per_epoch:,}] Lr: [{lr_factor * args.lr:,.3}], \
 Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Examples: {rpt['examples_seen']:,.0f}"""
                     timer.report(report)
                     metrics["train"].reset_local()
+
+                    if args.is_master:
+                        total_progress = batch + epoch * train_batches_per_epoch
+                        writer.add_scalar("train/learn_rate", next_lr, total_progress)
+                        writer.add_scalar("train/loss", avg_loss, total_progress)
+                        writer.add_scalar("train/batch_rank_corr", rpt_rank_corr, total_progress)
 
                 # Saving
                 if (is_save_batch or is_last_batch) and args.is_master:
@@ -234,22 +242,27 @@ Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Examples: {rpt[
 
                         metrics["test"].update({
                             "examples_seen": len(scores),
-                            "accum_loss": loss.item() * args.grad_accum, 
+                            "accum_loss": loss.item(), 
                             "rank_corr": rank_corr
                         })
                         
                         # Reporting
                         if is_last_batch:
-
                             metrics["test"].reduce()
                             rpt = metrics["test"].local
                             avg_loss = rpt["accum_loss"] / rpt["examples_seen"]
                             rpt_rank_corr = 100 * rpt["rank_corr"] / (test_batches_per_epoch * args.world_size)
                             report = f"Epoch [{epoch}] Evaluation, Avg Loss [{avg_loss:,.3f}], Rank Corr. [{rpt_rank_corr:,.3f}%]"
                             timer.report(report)
+                            metrics["test"].reset_local()
+
+                            if args.is_master:
+                                writer.add_scalar("test/loss", avg_loss, epoch)
+                                writer.add_scalar("test/batch_rank_corr", rpt_rank_corr, epoch)
                         
                         # Saving
                         if (is_save_batch or is_last_batch) and args.is_master:
+                            timer.report(f"Saving after test batch [{batch} / {test_batches_per_epoch}]")
                             # Save checkpoint
                             atomic_torch_save(
                                 {

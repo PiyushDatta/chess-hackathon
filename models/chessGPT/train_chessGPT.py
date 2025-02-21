@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, random_split
+from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
 import argparse
 import os
@@ -39,7 +40,7 @@ def get_args_parser():
     parser.add_argument("--wd", help="weight decay", type=float, default=0.01)
     parser.add_argument("--ws", help="learning rate warm up steps", type=int, default=1000)
     parser.add_argument("--grad-accum", help="gradient accumulation steps", type=int, default=10)
-    parser.add_argument("--save-steps", help="saving interval steps", type=int, default=100)
+    parser.add_argument("--save-steps", help="saving interval steps", type=int, default=50)
     return parser
 
 def main(args, timer):
@@ -57,15 +58,14 @@ def main(args, timer):
         print(f"TrainConfig: {args}")
     timer.report("Setup for distributed training")
 
-    saver = AtomicDirectory(args.save_dir)
+    saver = AtomicDirectory(output_directory=args.save_dir, is_master=args.is_master)
     timer.report("Validated checkpoint path")
 
     data_path = "/data"
     dataset = PGN_HDF_Dataset(data_path)
-    timer.report(f"Intitialized dataset with {len(dataset):,} PGNs.")
-
     random_generator = torch.Generator().manual_seed(42)
     train_dataset, test_dataset = random_split(dataset, [0.8, 0.2], generator=random_generator)
+    timer.report(f"Intitialized datasets with {len(train_dataset):,} training and {len(test_dataset):,} test PGNs.")
 
     train_sampler = InterruptableDistributedSampler(train_dataset)
     test_sampler = InterruptableDistributedSampler(test_dataset)
@@ -90,6 +90,9 @@ def main(args, timer):
     loss_fn = nn.CrossEntropyLoss(reduction='none')
     optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=args.wd)
     metrics = {"train": MetricsTracker(), "test": MetricsTracker()}
+
+    if args.is_master:
+        writer = SummaryWriter(log_dir=os.path.join(args.save_dir, "tb"))
 
     checkpoint_path = None
     local_resume_path = os.path.join(args.save_dir, saver.symlink_name)
@@ -152,7 +155,7 @@ def main(args, timer):
 
                 metrics["train"].update({
                     "gen_tokens": count_real,
-                    "accum_loss": loss.item() * args.grad_accum, 
+                    "accum_loss": loss.item() * args.grad_accum, # undo loss scale
                     "top1_correct": top1_correct.item(), 
                     "top5_correct": top5_correct.item(),
                     "uncertainty": total_prediction_entropy.item()
@@ -165,8 +168,9 @@ def main(args, timer):
                     
                     # learning rate warmup
                     lr_factor = min((epoch * train_steps_per_epoch + step) / args.ws, 1)
+                    next_lr = lr_factor * args.lr
                     for g in optimizer.param_groups:
-                        g['lr'] = lr_factor * args.lr
+                        g['lr'] = next_lr
                     
                     metrics["train"].reduce()
                     rpt = metrics["train"].local
@@ -180,6 +184,12 @@ Avg Loss [{avg_loss:,.3f}], Top1: [{rpt_top1:,.3f}%], Top5: [{rpt_top5:,.3f}%], 
 Uncertainty: [{rpt_uncertainty:,.3f}], Tokens: {rpt['gen_tokens']:,.0f}"""
                     timer.report(report)
                     metrics["train"].reset_local()
+
+                    if args.is_master:
+                        total_progress = batch + epoch * train_batches_per_epoch
+                        writer.add_scalar("train/learn_rate", next_lr, total_progress)
+                        writer.add_scalar("train/loss", avg_loss, total_progress)
+                        writer.add_scalar("train/batch_rank_corr", rpt_rank_corr, total_progress)
 
                 # Saving
                 if (is_save_batch or is_last_batch) and args.is_master:
@@ -250,9 +260,15 @@ Epoch [{epoch}] Evaluation, Avg Loss [{avg_loss:,.3f}], \
 Top1 [{rpt_top1:,.3f}%], Top5 [{rpt_top5:,.3f}%], \
 Uncertainty: [{rpt_uncertainty:,.3f}]"""
                             timer.report(report)
+                            metrics["test"].reset_local()
+
+                            if args.is_master:
+                                writer.add_scalar("test/loss", avg_loss, epoch)
+                                writer.add_scalar("test/batch_rank_corr", rpt_rank_corr, epoch)
                         
                         # Saving
                         if (is_save_batch or is_last_batch) and args.is_master:
+                            timer.report(f"Saving after test batch [{batch} / {test_batches_per_epoch}]")
                             # Save checkpoint
                             atomic_torch_save(
                                 {
