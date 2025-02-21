@@ -1,10 +1,10 @@
 isc_project_id = "<project-id>"
 experiment_name = "chessGPT"
 gpus = 16
-dataset_id = "a6ebbed3-c0ec-49f9-8759-f17bb28d5376"
+dataset_id_list = ["a6ebbed3-c0ec-49f9-8759-f17bb28d5376"]
 compute_mode = "cycle"
 command = '''
 source /root/.chess/bin/activate && 
 cd /root/chess-hackathon/ && 
 torchrun --nnodes=$NNODES --nproc-per-node=$N_PROC --master_addr=$MASTER_ADDR --master_port=$MASTER_PORT --node_rank=$RANK 
-train_chessGPT.py'''
+train_chessGPT.py --dataset-id a6ebbed3-c0ec-49f9-8759-f17bb28d5376'''
