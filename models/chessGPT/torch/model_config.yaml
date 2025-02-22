@@ -1,4 +1,11 @@
-nlayers: 10
-embed_dim: 64
-nhead: 8
-dropout: 0.05
+nlayers: 16
+embed_dim: 768
+nhead: 12
+head_dim: 64
+ff_dim: 3072
+dropout: 0.1
+rope: True
+causal: True
+norm_first: True
+ghost: False
+device: "cuda"

@@ -30,18 +30,25 @@ from model import Model
 
 timer.report("Completed imports")
 
+default_bs = 16
+default_lr = 0.0003
+default_work_step = 1000
+
 def get_args_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-config", help="model config path", type=Path, default="/root/chess-hackathon/model_config.yaml")
-    # parser.add_argument("--save-dir", help="save checkpoint path", type=Path, default=os.getenv("OUTPUT_PATH"))
-    parser.add_argument("--save-dir", help="save checkpoint path", type=Path, default="/root/chess-hackathon/checkpoint.pt")
+    parser.add_argument("--save-dir", help="save checkpoint path", type=Path, default=os.getenv("OUTPUT_PATH"))
+    # parser.add_argument("--save-dir", help="save checkpoint path", type=Path, default="/root/chess-hackathon/checkpoint.pt")
     parser.add_argument("--load-path", help="path to checkpoint.pt file to resume from", type=Path, default="/root/chess-hackathon/recover/checkpoint.pt")
-    parser.add_argument("--bs", help="batch size", type=int, default=4)
-    parser.add_argument("--lr", help="learning rate", type=float, default=0.001)
+    parser.add_argument("--bs", help="batch size", type=int, default=default_bs)
+    # parser.add_argument("--lr", help="learning rate", type=float, default=0.001)
+    parser.add_argument("--lr", help="learning rate", type=float, default=default_lr)
     parser.add_argument("--wd", help="weight decay", type=float, default=0.01)
-    parser.add_argument("--ws", help="learning rate warm up steps", type=int, default=1000)
-    parser.add_argument("--grad-accum", help="gradient accumulation steps", type=int, default=10)
-    parser.add_argument("--save-steps", help="saving interval steps", type=int, default=50)
+    parser.add_argument("--ws", help="learning rate warm up steps", type=int, default=default_work_step)
+    parser.add_argument("--grad-accum", help="gradient accumulation steps", type=int, default=5)
+    parser.add_argument("--save-steps", help="saving interval steps", type=int, default=20)
+    parser.add_argument("--dataset-id", help="Dataset ID for the dataset", type=str, required=True)
+
     return parser
 
 def main(args, timer):
@@ -62,8 +69,8 @@ def main(args, timer):
     saver = AtomicDirectory(output_directory=args.save_dir, is_master=args.is_master)
     timer.report("Validated checkpoint path")
 
-    # data_path = "/data"
-    data_path = "/data/gm"
+    # data_path = f"/data/{args.dataset_id}"
+    data_path = f"/data/{args.dataset_id}/lc0"
     dataset = PGN_HDF_Dataset(data_path)
     random_generator = torch.Generator().manual_seed(42)
     train_dataset, test_dataset = random_split(dataset, [0.8, 0.2], generator=random_generator)
@@ -118,6 +125,20 @@ def main(args, timer):
         timer.start_time = time.time()
         timer.report("Retrieved saved checkpoint")
 
+    # my stuff
+    # AMP
+    # scaler = torch.cuda.amp.GradScaler()
+    amp_enabled = False
+    scaler = torch.cuda.amp.GradScaler(
+        init_scale=2**16,
+        growth_factor=2.0,
+        backoff_factor=0.5,
+        growth_interval=2000,
+        enabled=amp_enabled
+    )
+    model.compile()
+
+    # train loop
     for epoch in range(train_dataloader.sampler.epoch, 10_000):
         with train_dataloader.sampler.in_epoch(epoch):
             timer.report(f"Training epoch {epoch}")
@@ -138,15 +159,31 @@ def main(args, timer):
                 if (is_save_batch or is_last_batch) and args.is_master:
                     checkpoint_directory = saver.prepare_checkpoint_directory()
 
-                logits, targets, target_pad_mask = model(pgn_batch)
-                
-                flat_logits = logits.flatten(end_dim=1)
-                flat_targets = targets.flatten()
-                flat_mask = torch.logical_not(target_pad_mask.flatten())
-                loss = loss_fn(flat_logits, flat_targets) * flat_mask
-                loss = loss.sum() / args.grad_accum
+                # After: (using AMP)
+                with torch.cuda.amp.autocast():
+                    logits, targets, target_pad_mask = model(pgn_batch)
+                    flat_logits = logits.flatten(end_dim=1)
+                    flat_targets = targets.flatten()
+                    flat_mask = torch.logical_not(target_pad_mask.flatten())
+                    loss = loss_fn(flat_logits, flat_targets) * flat_mask
+                    loss = loss.sum() / args.grad_accum
+                    # if torch.isnan(loss).any():
+                    #     # if args.is_master:
+                    #     timer.report(f"NaN loss detected! Skipping batch")
+                    #     optimizer.zero_grad()
+                    #     continue
+                scaler.scale(loss).backward()
 
-                loss.backward()
+                # BEFORE AMP
+                #
+                # logits, targets, target_pad_mask = model(pgn_batch)
+                # flat_logits = logits.flatten(end_dim=1)
+                # flat_targets = targets.flatten()
+                # flat_mask = torch.logical_not(target_pad_mask.flatten())
+                # loss = loss_fn(flat_logits, flat_targets) * flat_mask
+                # loss = loss.sum() / args.grad_accum
+                # loss.backward()
+
                 train_dataloader.sampler.advance(len(pgn_batch))
 
                 count_real, [top1_correct, top5_correct] = topk_accuracy(flat_logits, flat_targets, ks=[1, 5], mask=flat_mask)
@@ -164,7 +201,13 @@ def main(args, timer):
                 })
 
                 if is_accum_batch or is_last_batch:
-                    optimizer.step()
+                    # Unscale gradients first so that clipping is performed on the true gradient values.
+                    scaler.unscale_(optimizer)
+                    # Clip gradients. You can adjust the max_norm value as needed.
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    # optimizer.step()
                     optimizer.zero_grad()
                     step = batch // args.grad_accum
                     
@@ -191,11 +234,12 @@ Uncertainty: [{rpt_uncertainty:,.3f}], Tokens: {rpt['gen_tokens']:,.0f}"""
                         total_progress = batch + epoch * train_batches_per_epoch
                         writer.add_scalar("train/learn_rate", next_lr, total_progress)
                         writer.add_scalar("train/loss", avg_loss, total_progress)
-                        # writer.add_scalar("train/batch_rank_corr", rpt_rank_corr, total_progress)
+                        writer.add_scalar("train/uncertainty", rpt_uncertainty, total_progress)
 
                 # Saving
                 if (is_save_batch or is_last_batch) and args.is_master:
                     # Save checkpoint
+                    checkpoint_path = os.path.join(checkpoint_directory, "checkpoint.pt")
                     atomic_torch_save(
                         {
                             "model": model.module.state_dict(),
@@ -205,8 +249,9 @@ Uncertainty: [{rpt_uncertainty:,.3f}], Tokens: {rpt['gen_tokens']:,.0f}"""
                             "metrics": metrics,
                             "timer": timer
                         },
-                        os.path.join(checkpoint_directory, "checkpoint.pt"),
+                        checkpoint_path,
                     )
+                    timer.report(f"Saving checkpoint into {checkpoint_path}")
                     saver.atomic_symlink(checkpoint_directory)
 
             with test_dataloader.sampler.in_epoch(epoch):
@@ -266,7 +311,7 @@ Uncertainty: [{rpt_uncertainty:,.3f}]"""
 
                             if args.is_master:
                                 writer.add_scalar("test/loss", avg_loss, epoch)
-                                # writer.add_scalar("test/batch_rank_corr", rpt_rank_corr, epoch)
+                                writer.add_scalar("test/uncertainty", rpt_uncertainty, epoch)
                         
                         # Saving
                         if (is_save_batch or is_last_batch) and args.is_master:
