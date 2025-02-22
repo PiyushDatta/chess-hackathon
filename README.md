@@ -1,3 +1,8 @@
+#gpu_type = "24GB VRAM GPU"
+#gpus = 48
+#burst_shape_priority_list = ["gcp-asia-southeast1-h100-spot","gcp-us-central-h100-spot"]
+
+
 # NOT OFFICIAL REPO - THIS IS FORK - PLEASE IGNORE
 # OFFICIAL REPO: https://github.com/StrongResearch/chess-hackathon
 
