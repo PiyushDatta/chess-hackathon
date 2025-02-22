@@ -1,10 +1,7 @@
 isc_project_id = "df22dc84-55ed-4374-beb8-6e91ad22c8ad"
-experiment_name = "chessGPT_48gpu_flash_AMP"
-gpu_type = "24GB VRAM GPU"
-gpus = 48
-burst_shape_priority_list = ["aws-uswest2-a10g-spot","aws-apsoutheast2-a10g-spot","gcp-asia-southeast1-h100-8x-spot"]
-dataset_id_list = ["83f72080-4aee-445b-874f-7190d6880e13"]
-compute_mode = "burst"
+experiment_name = "chessGPT_48gpu_flash_AMP_try4"
+gpus = 8
+compute_mode = "cycle"
 command = '''
 source /root/chess-hackathon/venv/bin/activate && 
 cd /root/chess-hackathon/ && 

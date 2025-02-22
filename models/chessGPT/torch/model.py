@@ -75,6 +75,10 @@ class MultiHeadSelfAttention(nn.Module):
             if self.rope_encoder:
                 Q = self.rope_encoder(Q)
                 K = self.rope_encoder(K)
+            # Add these lines for debugging:
+            if torch.any(torch.isnan(Q)) or torch.any(torch.isnan(K)) or torch.any(torch.isnan(V)):
+                print("NaN values detected in Q, K, or V!")
+                import pdb; pdb.set_trace() # Add break point.
             # Rearrange to (batch_size, nhead, seq_len, head_dim)
             Q = Q.transpose(1, 2)
             K = K.transpose(1, 2)
@@ -146,7 +150,7 @@ class Model(nn.Module):
         self.init_weights()
 
     def init_weights(self):
-        initrange = 0.02
+        initrange = 0.1
         nn.init.uniform_(self.embedder.weight, -initrange, initrange)
         nn.init.xavier_uniform_(self.decoder.weight)
         nn.init.zeros_(self.decoder.bias)
