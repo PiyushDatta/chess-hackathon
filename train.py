@@ -41,8 +41,8 @@ from model import Model
 timer.report("Completed imports")
 
 default_bs = 32
-default_lr = 0.001
-default_work_step = 500
+default_lr = 0.006
+default_work_step = 750
 
 
 def get_args_parser():
