@@ -32,7 +32,6 @@ timer.report("Completed imports")
 def get_args_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-config", help="model config path", type=Path, default="/root/chess-hackathon/model_config.yaml")
-    parser.add_argument("--save-dir", help="save checkpoint path", type=Path, default=os.environ.get("OUTPUT_PATH"))
     parser.add_argument("--load-path", help="path to checkpoint.pt file to resume from", type=Path, default="/root/chess-hackathon/recover/checkpoint.pt")
     parser.add_argument("--bs", help="batch size", type=int, default=64)
     parser.add_argument("--lr", help="learning rate", type=float, default=0.001)
@@ -75,9 +74,6 @@ def main(args, timer):
         print(f"TrainConfig: {args}")
     timer.report("Setup for distributed training")
 
-    saver = AtomicDirectory(output_directory=args.save_dir, is_master=args.is_master)
-    timer.report("Validated checkpoint path")
-
     data_path = f"/data/{args.dataset_id}"
     dataset = EVAL_HDF_Dataset(data_path)
     random_generator = torch.Generator().manual_seed(42)
@@ -106,23 +102,31 @@ def main(args, timer):
 
     loss_fn = nn.MSELoss(reduction="sum")
     optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=args.wd)
-    metrics = {"train": MetricsTracker(), "test": MetricsTracker()}
+    metrics = {
+        "train": MetricsTracker(), 
+        "test": MetricsTracker(), 
+        "best_rank_corr": float("-inf")
+    }
 
     if args.is_master:
-        writer = SummaryWriter(log_dir=os.path.join(args.save_dir, "tb"))
+        writer = SummaryWriter(log_dir=os.environ["LOSSY_ARTIFACT_PATH"])
 
+    output_directory = os.environ["CHECKPOINT_ARTIFACT_PATH"]
+    saver = AtomicDirectory(output_directory=output_directory, is_master=args.is_master)
+
+    # set the checkpoint_path if there is one to resume from
     checkpoint_path = None
-    local_resume_path = os.path.join(args.save_dir, saver.symlink_name)
-    if os.path.islink(local_resume_path):
-        checkpoint = os.path.join(os.readlink(local_resume_path), "checkpoint.pt")
-        if os.path.isfile(checkpoint):
-            checkpoint_path = checkpoint
+    latest_symlink_file_path = os.path.join(output_directory, saver.symlink_name)
+    if os.path.islink(latest_symlink_file_path):
+        latest_checkpoint_path = os.readlink(latest_symlink_file_path)
+        checkpoint_path = os.path.join(latest_checkpoint_path, "checkpoint.pt")
     elif args.load_path:
+        # assume user has provided a full path to a checkpoint to resume
         if os.path.isfile(args.load_path):
             checkpoint_path = args.load_path
+
     if checkpoint_path:
-        if args.is_master:
-            timer.report(f"Loading checkpoint from {checkpoint_path}")
+        timer.report(f"Loading checkpoint from {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=f"cuda:{args.device_id}")
         model.module.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -133,73 +137,79 @@ def main(args, timer):
         timer.start_time = time.time()
         timer.report("Retrieved saved checkpoint")
 
+    ## TRAINING
+    
     for epoch in range(train_dataloader.sampler.epoch, 10_000):
-        with train_dataloader.sampler.in_epoch(epoch):
-            timer.report(f"Training epoch {epoch}")
-            train_batches_per_epoch = len(train_dataloader)
-            train_steps_per_epoch = math.ceil(train_batches_per_epoch / args.grad_accum)
-            optimizer.zero_grad()
-            model.train()
 
-            for boards, scores in train_dataloader:
+        train_dataloader.sampler.set_epoch(epoch)
+        test_dataloader.sampler.set_epoch(epoch)
 
-                # Determine the current step
-                batch = train_dataloader.sampler.progress // train_dataloader.batch_size
-                is_save_batch = (batch + 1) % args.save_steps == 0
-                is_accum_batch = (batch + 1) % args.grad_accum == 0
-                is_last_batch = (batch + 1) == train_batches_per_epoch
+        ## TRAIN
+        
+        timer.report(f"Training epoch {epoch}")
+        train_batches_per_epoch = len(train_dataloader)
+        train_steps_per_epoch = math.ceil(train_batches_per_epoch / args.grad_accum)
+        optimizer.zero_grad()
+        model.train()
 
-                # Prepare checkpoint directory
-                if (is_save_batch or is_last_batch) and args.is_master:
-                    checkpoint_directory = saver.prepare_checkpoint_directory()
+        for boards, scores in train_dataloader:
 
-                scores = logish_transform(scores) # suspect this might help
-                boards, scores = boards.to(args.device_id), scores.to(args.device_id)
+            # Determine the current step
+            batch = train_dataloader.sampler.progress // train_dataloader.batch_size
+            is_accum_batch = (batch + 1) % args.grad_accum == 0
+            is_last_batch = (batch + 1) == train_batches_per_epoch
+            is_save_batch = ((batch + 1) % args.save_steps == 0) or is_last_batch
 
-                logits = model(boards)
-                loss = loss_fn(logits, scores) / args.grad_accum
+            scores = logish_transform(scores) # suspect this might help
+            boards, scores = boards.to(args.device_id), scores.to(args.device_id)
 
-                loss.backward()
-                train_dataloader.sampler.advance(len(scores))
+            logits = model(boards)
+            loss = loss_fn(logits, scores) / args.grad_accum
 
-                # How accurately do our model scores rank the batch of moves? 
-                rank_corr = spearmans_rho(logits, scores)
+            loss.backward()
+            train_dataloader.sampler.advance(len(scores))
 
-                metrics["train"].update({
-                    "examples_seen": len(scores),
-                    "accum_loss": loss.item() * args.grad_accum, # undo loss scale
-                    "rank_corr": rank_corr
-                })
+            # How accurately do our model scores rank the batch of moves? 
+            rank_corr = spearmans_rho(logits, scores)
 
-                if is_accum_batch or is_last_batch:
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    step = batch // args.grad_accum
-                    
-                    # learning rate warmup
-                    lr_factor = min((epoch * train_steps_per_epoch + step) / args.ws, 1)
-                    next_lr = lr_factor * args.lr
-                    for g in optimizer.param_groups:
-                        g['lr'] = next_lr
-                    
-                    metrics["train"].reduce()
-                    rpt = metrics["train"].local
-                    avg_loss = rpt["accum_loss"] / rpt["examples_seen"]
-                    rpt_rank_corr = 100 * rpt["rank_corr"] / ((batch % args.grad_accum + 1) * args.world_size)
-                    report = f"""\
+            metrics["train"].update({
+                "examples_seen": len(scores),
+                "accum_loss": loss.item() * args.grad_accum, # undo loss scale
+                "rank_corr": rank_corr
+            })
+
+            if is_accum_batch or is_last_batch:
+                optimizer.step()
+                optimizer.zero_grad()
+                step = batch // args.grad_accum
+                
+                # learning rate warmup
+                lr_factor = min((epoch * train_steps_per_epoch + step) / args.ws, 1)
+                next_lr = lr_factor * args.lr
+                for g in optimizer.param_groups:
+                    g['lr'] = next_lr
+                
+                metrics["train"].reduce()
+                rpt = metrics["train"].local
+                avg_loss = rpt["accum_loss"] / rpt["examples_seen"]
+                rpt_rank_corr = 100 * rpt["rank_corr"] / ((batch % args.grad_accum + 1) * args.world_size)
+                report = f"""\
 Epoch [{epoch:,}] Step [{step:,} / {train_steps_per_epoch:,}] Batch [{batch:,} / {train_batches_per_epoch:,}] Lr: [{lr_factor * args.lr:,.3}], \
 Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Examples: {rpt['examples_seen']:,.0f}"""
-                    timer.report(report)
-                    metrics["train"].reset_local()
+                timer.report(report)
+                metrics["train"].reset_local()
 
-                    if args.is_master:
-                        total_progress = batch + epoch * train_batches_per_epoch
-                        writer.add_scalar("train/learn_rate", next_lr, total_progress)
-                        writer.add_scalar("train/loss", avg_loss, total_progress)
-                        writer.add_scalar("train/batch_rank_corr", rpt_rank_corr, total_progress)
+                if args.is_master:
+                    total_progress = batch + epoch * train_batches_per_epoch
+                    writer.add_scalar("train/learn_rate", next_lr, total_progress)
+                    writer.add_scalar("train/loss", avg_loss, total_progress)
+                    writer.add_scalar("train/batch_rank_corr", rpt_rank_corr, total_progress)
 
-                # Saving
-                if (is_save_batch or is_last_batch) and args.is_master:
+            # Saving
+            if is_save_batch:
+                checkpoint_directory = saver.prepare_checkpoint_directory()
+
+                if args.is_master:
                     # Save checkpoint
                     atomic_torch_save(
                         {
@@ -212,72 +222,83 @@ Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Examples: {rpt[
                         },
                         os.path.join(checkpoint_directory, "checkpoint.pt"),
                     )
+                
+                saver.symlink_latest(checkpoint_directory)
+
+        ## TESTING ##
+        
+        timer.report(f"Testing epoch {epoch}")
+        test_batches_per_epoch = len(test_dataloader)
+        model.eval()
+
+        with torch.no_grad():
+            for boards, scores in test_dataloader:
+
+                # Determine the current step
+                batch = test_dataloader.sampler.progress // test_dataloader.batch_size
+                is_last_batch = (batch + 1) == test_batches_per_epoch
+                is_save_batch = ((batch + 1) % args.save_steps == 0) or is_last_batch
+
+                scores = logish_transform(scores) # suspect this might help
+                boards, scores = boards.to(args.device_id), scores.to(args.device_id)
+
+                logits = model(boards)
+                loss = loss_fn(logits, scores)
+                test_dataloader.sampler.advance(len(scores))
+
+                # How accurately do our model scores rank the batch of moves? 
+                rank_corr = spearmans_rho(logits, scores)
+
+                metrics["test"].update({
+                    "examples_seen": len(scores),
+                    "accum_loss": loss.item(), 
+                    "rank_corr": rank_corr
+                })
+                
+                # Reporting
+                if is_last_batch:
+                    metrics["test"].reduce()
+                    rpt = metrics["test"].local
+                    avg_loss = rpt["accum_loss"] / rpt["examples_seen"]
+                    rpt_rank_corr = 100 * rpt["rank_corr"] / (test_batches_per_epoch * args.world_size)
+                    report = f"Epoch [{epoch}] Evaluation, Avg Loss [{avg_loss:,.3f}], Rank Corr. [{rpt_rank_corr:,.3f}%]"
+                    timer.report(report)
+                    metrics["test"].reset_local()
+
+                    if args.is_master:
+                        writer.add_scalar("test/loss", avg_loss, epoch)
+                        writer.add_scalar("test/batch_rank_corr", rpt_rank_corr, epoch)
+                
+                # Saving
+                if is_save_batch:
+                    # force save checkpoint if test performance improves
+                    if is_last_batch and (rpt_rank_corr > metrics["best_rank_corr"]):
+                        force_save = True
+                        metrics["best_rank_corr"] = rpt_rank_corr
+                    else:
+                        force_save = False
+
+                    checkpoint_directory = saver.prepare_checkpoint_directory(force_save=force_save)
+
+                    if args.is_master:
+                        # Save checkpoint
+                        atomic_torch_save(
+                            {
+                                "model": model.module.state_dict(),
+                                "optimizer": optimizer.state_dict(),
+                                "train_sampler": train_dataloader.sampler.state_dict(),
+                                "test_sampler": test_dataloader.sampler.state_dict(),
+                                "metrics": metrics,
+                                "timer": timer
+                            },
+                            os.path.join(checkpoint_directory, "checkpoint.pt"),
+                        )
+                    
                     saver.atomic_symlink(checkpoint_directory)
 
-            with test_dataloader.sampler.in_epoch(epoch):
-                timer.report(f"Testing epoch {epoch}")
-                test_batches_per_epoch = len(test_dataloader)
-                model.eval()
-
-                with torch.no_grad():
-                    for boards, scores in test_dataloader:
-
-                        # Determine the current step
-                        batch = test_dataloader.sampler.progress // test_dataloader.batch_size
-                        is_save_batch = (batch + 1) % args.save_steps == 0
-                        is_last_batch = (batch + 1) == test_batches_per_epoch
-
-                        # Prepare checkpoint directory
-                        if (is_save_batch or is_last_batch) and args.is_master:
-                            checkpoint_directory = saver.prepare_checkpoint_directory()
-
-                        scores = logish_transform(scores) # suspect this might help
-                        boards, scores = boards.to(args.device_id), scores.to(args.device_id)
-
-                        logits = model(boards)
-                        loss = loss_fn(logits, scores)
-                        test_dataloader.sampler.advance(len(scores))
-
-                        # How accurately do our model scores rank the batch of moves? 
-                        rank_corr = spearmans_rho(logits, scores)
-
-                        metrics["test"].update({
-                            "examples_seen": len(scores),
-                            "accum_loss": loss.item(), 
-                            "rank_corr": rank_corr
-                        })
-                        
-                        # Reporting
-                        if is_last_batch:
-                            metrics["test"].reduce()
-                            rpt = metrics["test"].local
-                            avg_loss = rpt["accum_loss"] / rpt["examples_seen"]
-                            rpt_rank_corr = 100 * rpt["rank_corr"] / (test_batches_per_epoch * args.world_size)
-                            report = f"Epoch [{epoch}] Evaluation, Avg Loss [{avg_loss:,.3f}], Rank Corr. [{rpt_rank_corr:,.3f}%]"
-                            timer.report(report)
-                            metrics["test"].reset_local()
-
-                            if args.is_master:
-                                writer.add_scalar("test/loss", avg_loss, epoch)
-                                writer.add_scalar("test/batch_rank_corr", rpt_rank_corr, epoch)
-                        
-                        # Saving
-                        if (is_save_batch or is_last_batch) and args.is_master:
-                            timer.report(f"Saving after test batch [{batch} / {test_batches_per_epoch}]")
-                            # Save checkpoint
-                            atomic_torch_save(
-                                {
-                                    "model": model.module.state_dict(),
-                                    "optimizer": optimizer.state_dict(),
-                                    "train_sampler": train_dataloader.sampler.state_dict(),
-                                    "test_sampler": test_dataloader.sampler.state_dict(),
-                                    "metrics": metrics,
-                                    "timer": timer
-                                },
-                                os.path.join(checkpoint_directory, "checkpoint.pt"),
-                            )
-                            saver.atomic_symlink(checkpoint_directory)
-
+        train_dataloader.sampler.reset_progress()
+        test_dataloader.sampler.reset_progress()
+        
 
 timer.report("Defined functions")
 if __name__ == "__main__":

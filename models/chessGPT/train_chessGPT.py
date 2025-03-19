@@ -33,7 +33,6 @@ timer.report("Completed imports")
 def get_args_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-config", help="model config path", type=Path, default="/root/chess-hackathon/model_config.yaml")
-    parser.add_argument("--save-dir", help="save checkpoint path", type=Path, default=os.getenv("OUTPUT_PATH"))
     parser.add_argument("--load-path", help="path to checkpoint.pt file to resume from", type=Path, default="/root/chess-hackathon/recover/checkpoint.pt")
     parser.add_argument("--bs", help="batch size", type=int, default=4)
     parser.add_argument("--lr", help="learning rate", type=float, default=0.001)
@@ -59,9 +58,6 @@ def main(args, timer):
         print("Hostname:", hostname)
         print(f"TrainConfig: {args}")
     timer.report("Setup for distributed training")
-
-    saver = AtomicDirectory(output_directory=args.save_dir, is_master=args.is_master)
-    timer.report("Validated checkpoint path")
 
     data_path = f"/data/{args.dataset_id}"
     dataset = PGN_HDF_Dataset(data_path)
@@ -91,23 +87,31 @@ def main(args, timer):
 
     loss_fn = nn.CrossEntropyLoss(reduction='none')
     optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=args.wd)
-    metrics = {"train": MetricsTracker(), "test": MetricsTracker()}
+    metrics = {
+        "train": MetricsTracker(), 
+        "test": MetricsTracker(), 
+        "best_top1_accu": float("-inf")
+    }
 
     if args.is_master:
-        writer = SummaryWriter(log_dir=os.path.join(args.save_dir, "tb"))
+        writer = SummaryWriter(log_dir=os.environ["LOSSY_ARTIFACT_PATH"])
 
+    output_directory = os.environ["CHECKPOINT_ARTIFACT_PATH"]
+    saver = AtomicDirectory(output_directory=output_directory, is_master=args.is_master)
+
+    # set the checkpoint_path if there is one to resume from
     checkpoint_path = None
-    local_resume_path = os.path.join(args.save_dir, saver.symlink_name)
-    if os.path.islink(local_resume_path):
-        checkpoint = os.path.join(os.readlink(local_resume_path), "checkpoint.pt")
-        if os.path.isfile(checkpoint):
-            checkpoint_path = checkpoint  
+    latest_symlink_file_path = os.path.join(output_directory, saver.symlink_name)
+    if os.path.islink(latest_symlink_file_path):
+        latest_checkpoint_path = os.readlink(latest_symlink_file_path)
+        checkpoint_path = os.path.join(latest_checkpoint_path, "checkpoint.pt")
     elif args.load_path:
+        # assume user has provided a full path to a checkpoint to resume
         if os.path.isfile(args.load_path):
             checkpoint_path = args.load_path
+            
     if checkpoint_path:
-        if args.is_master:
-            timer.report(f"Loading checkpoint from {checkpoint_path}")
+        timer.report(f"Loading checkpoint from {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=f"cuda:{args.device_id}")
         model.module.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -118,83 +122,89 @@ def main(args, timer):
         timer.start_time = time.time()
         timer.report("Retrieved saved checkpoint")
 
+    ## TRAINING
+
     for epoch in range(train_dataloader.sampler.epoch, 10_000):
-        with train_dataloader.sampler.in_epoch(epoch):
-            timer.report(f"Training epoch {epoch}")
-            train_batches_per_epoch = len(train_dataloader)
-            train_steps_per_epoch = math.ceil(train_batches_per_epoch / args.grad_accum)
-            optimizer.zero_grad()
-            model.train()
 
-            for pgn_batch in train_dataloader:
+        train_dataloader.sampler.set_epoch(epoch)
+        test_dataloader.sampler.set_epoch(epoch)
 
-                # Determine the current step
-                batch = train_dataloader.sampler.progress // train_dataloader.batch_size
-                is_save_batch = (batch + 1) % args.save_steps == 0
-                is_accum_batch = (batch + 1) % args.grad_accum == 0
-                is_last_batch = (batch + 1) == train_batches_per_epoch
+        ## TRAIN
 
-                # Prepare checkpoint directory
-                if (is_save_batch or is_last_batch) and args.is_master:
-                    checkpoint_directory = saver.prepare_checkpoint_directory()
+        timer.report(f"Training epoch {epoch}")
+        train_batches_per_epoch = len(train_dataloader)
+        train_steps_per_epoch = math.ceil(train_batches_per_epoch / args.grad_accum)
+        optimizer.zero_grad()
+        model.train()
 
-                logits, targets, target_pad_mask = model(pgn_batch)
+        for pgn_batch in train_dataloader:
+
+            # Determine the current step
+            batch = train_dataloader.sampler.progress // train_dataloader.batch_size
+            is_accum_batch = (batch + 1) % args.grad_accum == 0
+            is_last_batch = (batch + 1) == train_batches_per_epoch
+            is_save_batch = ((batch + 1) % args.save_steps == 0) or is_last_batch
+
+            logits, targets, target_pad_mask = model(pgn_batch)
+            
+            flat_logits = logits.flatten(end_dim=1)
+            flat_targets = targets.flatten()
+            flat_mask = torch.logical_not(target_pad_mask.flatten())
+            loss = loss_fn(flat_logits, flat_targets) * flat_mask
+            loss = loss.sum() / args.grad_accum
+
+            loss.backward()
+            train_dataloader.sampler.advance(len(pgn_batch))
+
+            count_real, [top1_correct, top5_correct] = topk_accuracy(flat_logits, flat_targets, ks=[1, 5], mask=flat_mask)
+
+            char_probs = softmax(flat_logits)
+            entropies = -char_probs * torch.log2(char_probs + 1e-8)
+            total_prediction_entropy = entropies[flat_mask].sum()
+
+            metrics["train"].update({
+                "gen_tokens": count_real,
+                "accum_loss": loss.item() * args.grad_accum, # undo loss scale
+                "top1_correct": top1_correct.item(), 
+                "top5_correct": top5_correct.item(),
+                "uncertainty": total_prediction_entropy.item()
+            })
+
+            if is_accum_batch or is_last_batch:
+                optimizer.step()
+                optimizer.zero_grad()
+                step = batch // args.grad_accum
                 
-                flat_logits = logits.flatten(end_dim=1)
-                flat_targets = targets.flatten()
-                flat_mask = torch.logical_not(target_pad_mask.flatten())
-                loss = loss_fn(flat_logits, flat_targets) * flat_mask
-                loss = loss.sum() / args.grad_accum
-
-                loss.backward()
-                train_dataloader.sampler.advance(len(pgn_batch))
-
-                count_real, [top1_correct, top5_correct] = topk_accuracy(flat_logits, flat_targets, ks=[1, 5], mask=flat_mask)
-
-                char_probs = softmax(flat_logits)
-                entropies = -char_probs * torch.log2(char_probs + 1e-8)
-                total_prediction_entropy = entropies[flat_mask].sum()
-
-                metrics["train"].update({
-                    "gen_tokens": count_real,
-                    "accum_loss": loss.item() * args.grad_accum, # undo loss scale
-                    "top1_correct": top1_correct.item(), 
-                    "top5_correct": top5_correct.item(),
-                    "uncertainty": total_prediction_entropy.item()
-                })
-
-                if is_accum_batch or is_last_batch:
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    step = batch // args.grad_accum
-                    
-                    # learning rate warmup
-                    lr_factor = min((epoch * train_steps_per_epoch + step) / args.ws, 1)
-                    next_lr = lr_factor * args.lr
-                    for g in optimizer.param_groups:
-                        g['lr'] = next_lr
-                    
-                    metrics["train"].reduce()
-                    rpt = metrics["train"].local
-                    avg_loss = rpt["accum_loss"] / rpt["gen_tokens"]
-                    rpt_top1 = 100 * rpt["top1_correct"] / rpt["gen_tokens"]
-                    rpt_top5 = 100 * rpt["top5_correct"] / rpt["gen_tokens"]
-                    rpt_uncertainty = rpt["uncertainty"] / rpt["gen_tokens"]
-                    report = f"""\
+                # learning rate warmup
+                lr_factor = min((epoch * train_steps_per_epoch + step) / args.ws, 1)
+                next_lr = lr_factor * args.lr
+                for g in optimizer.param_groups:
+                    g['lr'] = next_lr
+                
+                metrics["train"].reduce()
+                rpt = metrics["train"].local
+                avg_loss = rpt["accum_loss"] / rpt["gen_tokens"]
+                rpt_top1 = 100 * rpt["top1_correct"] / rpt["gen_tokens"]
+                rpt_top5 = 100 * rpt["top5_correct"] / rpt["gen_tokens"]
+                rpt_uncertainty = rpt["uncertainty"] / rpt["gen_tokens"]
+                report = f"""\
 Epoch [{epoch:,}] Step [{step:,} / {train_steps_per_epoch:,}] Batch [{batch:,} / {train_batches_per_epoch:,}] Lr: [{lr_factor * args.lr:,.3}], \
 Avg Loss [{avg_loss:,.3f}], Top1: [{rpt_top1:,.3f}%], Top5: [{rpt_top5:,.3f}%], \
 Uncertainty: [{rpt_uncertainty:,.3f}], Tokens: {rpt['gen_tokens']:,.0f}"""
-                    timer.report(report)
-                    metrics["train"].reset_local()
+                timer.report(report)
+                metrics["train"].reset_local()
 
-                    if args.is_master:
-                        total_progress = batch + epoch * train_batches_per_epoch
-                        writer.add_scalar("train/learn_rate", next_lr, total_progress)
-                        writer.add_scalar("train/loss", avg_loss, total_progress)
-                        writer.add_scalar("train/uncertainty", rpt_uncertainty, total_progress)
+                if args.is_master:
+                    total_progress = batch + epoch * train_batches_per_epoch
+                    writer.add_scalar("train/learn_rate", next_lr, total_progress)
+                    writer.add_scalar("train/loss", avg_loss, total_progress)
+                    writer.add_scalar("train/uncertainty", rpt_uncertainty, total_progress)
 
-                # Saving
-                if (is_save_batch or is_last_batch) and args.is_master:
+            # Saving
+            if is_save_batch:
+                checkpoint_directory = saver.prepare_checkpoint_directory()
+
+                if args.is_master:
                     # Save checkpoint
                     atomic_torch_save(
                         {
@@ -207,83 +217,94 @@ Uncertainty: [{rpt_uncertainty:,.3f}], Tokens: {rpt['gen_tokens']:,.0f}"""
                         },
                         os.path.join(checkpoint_directory, "checkpoint.pt"),
                     )
-                    saver.atomic_symlink(checkpoint_directory)
 
-            with test_dataloader.sampler.in_epoch(epoch):
-                timer.report(f"Testing epoch {epoch}")
-                test_batches_per_epoch = len(test_dataloader)
-                model.eval()
+                saver.atomic_symlink(checkpoint_directory)
 
-                with torch.no_grad():
-                    for pgn_batch in test_dataloader:
+        ## TEST     
+        
+        timer.report(f"Testing epoch {epoch}")
+        test_batches_per_epoch = len(test_dataloader)
+        model.eval()
 
-                        # Determine the current step
-                        batch = test_dataloader.sampler.progress // test_dataloader.batch_size
-                        is_save_batch = (batch + 1) % args.save_steps == 0
-                        is_last_batch = (batch + 1) == test_batches_per_epoch
+        with torch.no_grad():
+            for pgn_batch in test_dataloader:
 
-                        # Prepare checkpoint directory
-                        if (is_save_batch or is_last_batch) and args.is_master:
-                            checkpoint_directory = saver.prepare_checkpoint_directory()
+                # Determine the current step
+                batch = test_dataloader.sampler.progress // test_dataloader.batch_size
+                is_last_batch = (batch + 1) == test_batches_per_epoch
+                is_save_batch = ((batch + 1) % args.save_steps == 0) or is_last_batch
 
-                        logits, targets, target_pad_mask = model(pgn_batch)
+                logits, targets, target_pad_mask = model(pgn_batch)
 
-                        flat_logits = logits.flatten(end_dim=1)
-                        flat_targets = targets.flatten()
-                        flat_mask = torch.logical_not(target_pad_mask.flatten())
-                        loss = (loss_fn(flat_logits, flat_targets) * flat_mask).sum()
-                        test_dataloader.sampler.advance(len(pgn_batch))
+                flat_logits = logits.flatten(end_dim=1)
+                flat_targets = targets.flatten()
+                flat_mask = torch.logical_not(target_pad_mask.flatten())
+                loss = (loss_fn(flat_logits, flat_targets) * flat_mask).sum()
+                test_dataloader.sampler.advance(len(pgn_batch))
 
-                        count_real, [top1_correct, top5_correct] = topk_accuracy(flat_logits, flat_targets, ks=[1, 5], mask=flat_mask)
+                count_real, [top1_correct, top5_correct] = topk_accuracy(flat_logits, flat_targets, ks=[1, 5], mask=flat_mask)
 
-                        char_probs = softmax(flat_logits)
-                        entropies = -char_probs * torch.log2(char_probs + 1e-8)
-                        total_prediction_entropy = entropies[flat_mask].sum()
+                char_probs = softmax(flat_logits)
+                entropies = -char_probs * torch.log2(char_probs + 1e-8)
+                total_prediction_entropy = entropies[flat_mask].sum()
 
-                        metrics["test"].update({
-                            "gen_tokens": count_real,
-                            "accum_loss": loss.item(), 
-                            "top1_correct": top1_correct.item(), 
-                            "top5_correct": top5_correct.item(),
-                            "uncertainty": total_prediction_entropy.item()
-                        })
-                        
-                        # Reporting
-                        if is_last_batch:
+                metrics["test"].update({
+                    "gen_tokens": count_real,
+                    "accum_loss": loss.item(), 
+                    "top1_correct": top1_correct.item(), 
+                    "top5_correct": top5_correct.item(),
+                    "uncertainty": total_prediction_entropy.item()
+                })
+                
+                # Reporting
+                if is_last_batch:
 
-                            metrics["test"].reduce()
-                            rpt = metrics["test"].local
-                            avg_loss = rpt["accum_loss"] / rpt["gen_tokens"]
-                            rpt_top1 = 100 * rpt["top1_correct"] / rpt["gen_tokens"]
-                            rpt_top5 = 100 * rpt["top5_correct"] / rpt["gen_tokens"]
-                            rpt_uncertainty = rpt["uncertainty"] / rpt["gen_tokens"]
-                            report = f"""\
+                    metrics["test"].reduce()
+                    rpt = metrics["test"].local
+                    avg_loss = rpt["accum_loss"] / rpt["gen_tokens"]
+                    rpt_top1 = 100 * rpt["top1_correct"] / rpt["gen_tokens"]
+                    rpt_top5 = 100 * rpt["top5_correct"] / rpt["gen_tokens"]
+                    rpt_uncertainty = rpt["uncertainty"] / rpt["gen_tokens"]
+                    report = f"""\
 Epoch [{epoch}] Evaluation, Avg Loss [{avg_loss:,.3f}], \
 Top1 [{rpt_top1:,.3f}%], Top5 [{rpt_top5:,.3f}%], \
 Uncertainty: [{rpt_uncertainty:,.3f}]"""
-                            timer.report(report)
-                            metrics["test"].reset_local()
+                    timer.report(report)
+                    metrics["test"].reset_local()
 
-                            if args.is_master:
-                                writer.add_scalar("test/loss", avg_loss, epoch)
-                                writer.add_scalar("test/uncertainty", rpt_uncertainty, epoch)
-                        
-                        # Saving
-                        if (is_save_batch or is_last_batch) and args.is_master:
-                            timer.report(f"Saving after test batch [{batch} / {test_batches_per_epoch}]")
-                            # Save checkpoint
-                            atomic_torch_save(
-                                {
-                                    "model": model.module.state_dict(),
-                                    "optimizer": optimizer.state_dict(),
-                                    "train_sampler": train_dataloader.sampler.state_dict(),
-                                    "test_sampler": test_dataloader.sampler.state_dict(),
-                                    "metrics": metrics,
-                                    "timer": timer
-                                },
-                                os.path.join(checkpoint_directory, "checkpoint.pt"),
-                            )
-                            saver.atomic_symlink(checkpoint_directory)
+                    if args.is_master:
+                        writer.add_scalar("test/loss", avg_loss, epoch)
+                        writer.add_scalar("test/uncertainty", rpt_uncertainty, epoch)
+                
+                # Saving
+                if is_save_batch:
+                    # force save checkpoint if test performance improves
+                    if is_last_batch and (rpt_top1 > metrics["best_top1_accu"]):
+                        force_save = True
+                        metrics["best_top1_accu"] = rpt_top1
+                    else:
+                        force_save = False
+
+                    checkpoint_directory = saver.prepare_checkpoint_directory(force_save=force_save)
+
+                    if args.is_master:
+                        # Save checkpoint
+                        atomic_torch_save(
+                            {
+                                "model": model.module.state_dict(),
+                                "optimizer": optimizer.state_dict(),
+                                "train_sampler": train_dataloader.sampler.state_dict(),
+                                "test_sampler": test_dataloader.sampler.state_dict(),
+                                "metrics": metrics,
+                                "timer": timer
+                            },
+                            os.path.join(checkpoint_directory, "checkpoint.pt"),
+                        )
+                    
+                    saver.atomic_symlink(checkpoint_directory)
+
+        train_dataloader.sampler.reset_progress()
+        test_dataloader.sampler.reset_progress()
 
 
 timer.report("Defined functions")
