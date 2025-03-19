@@ -2,6 +2,7 @@
 `python3 -m venv venv`
 `pip install -r requirements.txt`
 `cp models/chessGPT/torch/model.py model.py`
+`cp models/chessGPT/train_chessGPT.py train.py`
 `cp models/chessGPT/torch/model_config.yaml model_config.yaml`
 
 
