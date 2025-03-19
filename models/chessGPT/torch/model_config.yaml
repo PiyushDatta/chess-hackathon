@@ -1,10 +1,10 @@
-nlayers: 24
-embed_dim: 512
-nhead: 8
-head_dim: 64
-ff_dim: 2048
-dropout: 0.05
-rope: True
-causal: True
+nlayers:   6
+embed_dim: 256
+nhead:     4     # since 256 / 64 = 4
+head_dim:  64
+ff_dim:    1024  # 4 * embed_dim
+dropout:   0.05
+rope:      True
+causal:    True
 norm_first: False
-ghost: True
+ghost:     True

@@ -40,9 +40,12 @@ from model import Model
 
 timer.report("Completed imports")
 
-default_bs = 32
-default_lr = 0.006
-default_work_step = 750
+# default_bs = 32
+# default_lr = 0.006
+# default_work_step = 750
+default_bs = 16
+default_lr = 0.003
+default_work_step = 300
 
 
 def get_args_parser():
@@ -74,10 +77,10 @@ def get_args_parser():
         "--ws", help="learning rate warm up steps", type=int, default=default_work_step
     )
     parser.add_argument(
-        "--grad-accum", help="gradient accumulation steps", type=int, default=5
+        "--grad-accum", help="gradient accumulation steps", type=int, default=4
     )
     parser.add_argument(
-        "--save-steps", help="saving interval steps", type=int, default=20
+        "--save-steps", help="saving interval steps", type=int, default=50
     )
     parser.add_argument(
         "--dataset-id", help="Dataset ID for the dataset", type=str, required=True
@@ -97,8 +100,8 @@ def save_checkpoint(
     args,
     fsdp=False,
 ):
-    if not args.is_master and fsdp:
-        timer.report(f" FSDP NOT saving checkpoint from {checkpoint_path} since not is_master (rank == 0)")
+    if not args.is_master:
+        timer.report(f"NOT saving checkpoint from {checkpoint_path} since not is_master (rank == 0)")
         return
     if fsdp:
         timer.report(f"Saving fsdp")
@@ -187,7 +190,7 @@ def load_checkpoint(
         timer.report(f"Loaded fsdp")
     else:
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
-        model.load_state_dict(checkpoint["model"], strict=False)
+        model.load_state_dict(checkpoint["model"])
     optimizer.load_state_dict(checkpoint["optimizer"])
     train_dataloader.sampler.load_state_dict(checkpoint["train_sampler"])
     test_dataloader.sampler.load_state_dict(checkpoint["test_sampler"])
@@ -293,7 +296,7 @@ def main(args, timer):
     elif args.load_path:
         if os.path.isfile(args.load_path):
             checkpoint_path = args.load_path
-    timer.report(f"Checkpoint path: {checkpoint_path}")
+    timer.report(f"Load checkpoint path: {checkpoint_path}")
     if checkpoint_path:
         load_checkpoint(
             model,
@@ -335,6 +338,8 @@ def main(args, timer):
         # timer = checkpoint["timer"]
         # timer.start_time = time.time()
         # timer.report("Retrieved saved checkpoint")
+    else:
+        timer.report(f"Did not load checkpoint from path: {checkpoint_path}")
 
     # train loop
     for epoch in range(train_dataloader.sampler.epoch, 10_000):
