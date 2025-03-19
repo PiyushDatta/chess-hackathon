@@ -36,15 +36,22 @@ def fix_checkpoint():
 # so that your model can be instantiated exactly as follows. Your model must NOT require any initialization arguments
 # besides those described in your "model_config.yaml" file.
 
-model_config = yaml.safe_load(open("model_config.yaml"))
-model = Model(**model_config)
+#####
+# 1
+#####
+# model_config = yaml.safe_load(open("model_config.yaml"))
+# model = Model(**model_config)
 
 # adjusted checkpoint loading
 # fix_checkpoint()
 # checkpoint = torch.load("adjusted_checkpoint.pt", map_location=torch.device('cpu'))
 # checkpoint loading
-checkpoint = torch.load("checkpoint.pt", map_location=torch.device('cpu'))
-model.load_state_dict(checkpoint["model"])
+
+#####
+# 2
+#####
+# checkpoint = torch.load("checkpoint.pt", map_location=torch.device('cpu'))
+# model.load_state_dict(checkpoint["model"])
 
 # Your model checkpoint must be called "checkpoint.pt" and must be a dictionary-like object with your model weights
 # stored at the key "model" so that it can be loaded into your model exactly as follows.
@@ -60,10 +67,10 @@ ignore = """
 """
 
 # Regular agents
-# agents = {'white': chg.Agent(), 'black': chg.Agent()}
+agents = {'white': chg.Agent(), 'black': chg.Agent()}
 
 # Agents with torch models
-agents = {"white": chg.Agent(model), "black": chg.Agent(model)}
+# agents = {"white": chg.Agent(model), "black": chg.Agent(model)}
 
 teams = {"white": "Team White", "black": "Team Black"}
 game_result = chg.play_game(
