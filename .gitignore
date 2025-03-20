@@ -163,4 +163,3 @@ cython_debug/
 
 # testing stuff
 demo.png
-training_output/*
