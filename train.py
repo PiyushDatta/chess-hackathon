@@ -55,7 +55,7 @@ def get_args_parser():
         "--grad-accum", help="gradient accumulation steps", type=int, default=6
     )
     parser.add_argument(
-        "--save-steps", help="saving interval steps", type=int, default=5
+        "--save-steps", help="saving interval steps", type=int, default=50
     )
     parser.add_argument(
         "--dataset-id", help="Dataset ID for the dataset", type=str, default=''
@@ -302,7 +302,7 @@ Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Examples: {rpt[
                         },
                         os.path.join(checkpoint_directory, "checkpoint.pt"),
                     )
-                print(f"Saving checkpoint to {checkpoint_directory}")
+                # print(f"Saving checkpoint to {checkpoint_directory}")
                 saver.symlink_latest(checkpoint_directory)
 
         ## TESTING ##
