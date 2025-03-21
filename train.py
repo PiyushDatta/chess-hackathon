@@ -8,6 +8,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, random_split
 from torch.utils.tensorboard import SummaryWriter
+import torch.autograd.profiler as profiler
 from pathlib import Path
 import argparse
 import os
@@ -109,6 +110,10 @@ def main(args, timer):
         args.model_config = os.path.join(current_path, "model_config.yaml")
         os.environ["LOSSY_ARTIFACT_PATH"] = training_output_path
         os.environ["CHECKPOINT_ARTIFACT_PATH"] = training_output_path
+        print("CUDA available:", torch.cuda.is_available())
+        print("Number of GPUs:", torch.cuda.device_count())
+        print("Current device:", torch.cuda.current_device())
+        print("Device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
     else:
         rank = int(os.environ["RANK"])  # Rank of this GPU in cluster
         args.world_size = int(
@@ -224,21 +229,35 @@ def main(args, timer):
         optimizer.zero_grad()
         model.train()
 
-        for boards, scores in train_dataloader:
+        # Enable profiling on the first few batches for detailed timing.
+        profiling_enabled = (epoch in (0,1,2,3,4,5))
 
+        for boards, scores in train_dataloader:
+            # Start timing the batch
+            batch_start_time = time.time()  
             # Determine the current step
             batch = train_dataloader.sampler.progress // train_dataloader.batch_size
             is_accum_batch = (batch + 1) % args.grad_accum == 0
             is_last_batch = (batch + 1) == train_batches_per_epoch
             is_save_batch = ((batch + 1) % args.save_steps == 0) or is_last_batch
 
-            scores = logish_transform(scores)  # suspect this might help
-            boards, scores = boards.to(args.device_id), scores.to(args.device_id)
+            # If profiling is enabled, use the context manager for a specific training step.
+            if profiling_enabled:
+                with profiler.profile(record_shapes=True, use_cuda=True) as prof:
+                    scores = logish_transform(scores)
+                    boards, scores = boards.to(args.device_id), scores.to(args.device_id)
+                    logits = model(boards)
+                    loss = loss_fn(logits, scores) / args.grad_accum
+                    loss.backward()
+            else:
+                scores = logish_transform(scores)  # suspect this might help
+                boards, scores = boards.to(args.device_id), scores.to(args.device_id)
 
-            logits = model(boards)
-            loss = loss_fn(logits, scores) / args.grad_accum
+                logits = model(boards)
+                loss = loss_fn(logits, scores) / args.grad_accum
 
-            loss.backward()
+                loss.backward()
+
             train_dataloader.sampler.advance(len(scores))
 
             # How accurately do our model scores rank the batch of moves?
@@ -253,6 +272,7 @@ def main(args, timer):
             )
 
             if is_accum_batch or is_last_batch:
+
                 optimizer.step()
                 optimizer.zero_grad()
                 step = batch // args.grad_accum
@@ -271,9 +291,13 @@ def main(args, timer):
                     * rpt["rank_corr"]
                     / ((batch % args.grad_accum + 1) * args.world_size)
                 )
-                report = f"""\
+                # Compute batch time and throughput
+                batch_time = time.time() - batch_start_time
+                throughput = rpt["examples_seen"] / batch_time
+                # report
+                report = f"""\ 
 Epoch [{epoch:,}] Step [{step:,} / {train_steps_per_epoch:,}] Batch [{batch:,} / {train_batches_per_epoch:,}] Lr: [{lr_factor * args.lr:,.3}], \
-Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Examples: {rpt['examples_seen']:,.0f}"""
+Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Batch Time: [{batch_time:.3f} s], Throughput: [{throughput:.1f} ex/s]"""
                 timer.report(report)
                 metrics["train"].reset_local()
 
@@ -281,9 +305,14 @@ Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Examples: {rpt[
                     total_progress = batch + epoch * train_batches_per_epoch
                     writer.add_scalar("train/learn_rate", next_lr, total_progress)
                     writer.add_scalar("train/loss", avg_loss, total_progress)
-                    writer.add_scalar(
-                        "train/batch_rank_corr", rpt_rank_corr, total_progress
-                    )
+                    writer.add_scalar("train/batch_rank_corr", rpt_rank_corr, total_progress)
+                    writer.add_scalar("train/batch_time", batch_time, total_progress)
+                    writer.add_scalar("train/throughput", throughput, total_progress)
+                    chrome_trace_file = os.path.join(os.environ["CHECKPOINT_ARTIFACT_PATH"], f"chrome_trace_epoch_{epoch}_step_{step}.json")
+                    prof.export_chrome_trace(chrome_trace_file)
+                    # print(prof.key_averages().table(row_limit=10))
+                    print("Outputting key averages")
+                    print(prof.key_averages().table(row_limit=10, top_level_events_only=True))
 
             # Saving
             if is_save_batch:

@@ -79,7 +79,7 @@ teams = {"white": "Team White", "black": "Team Black"}
 game_result = chg.play_game(
     agents,
     teams,
-    max_moves=14,
+    max_moves=10,
     min_seconds_per_move=0,
     verbose=True,
     poseval=True,
