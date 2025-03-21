@@ -14,6 +14,202 @@
 
 `python train.py`
 
+## To see tensorboard
+
+`tensorboard --logdir=training_output`
+
+## To use bottleneck
+
+`python3 -m torch.utils.bottleneck train.py --stop-after-test-max-limit-train-batches`
+
+## Training notes
+
+#### Training session 1
+
+    -   Chess vision model (last winner)
+    -   Base training script with profiler
+    -   chessVision_profiler.png
+    -   Batch throughput: 60-64 (examples seen)
+    -   Training loss at 28 at 100 steps
+    -   Train loss/rank corr at -2.88 at 100 steps
+
+#### Training session 2
+
+    -   Chess vision model (last winner)
+    -   Base training script with profiler (can enable/disable, default is false)
+    -   Dataloaders during training (num_workers=8, pin_memory=True, prefetch_factor=4,  # Add prefetching, persistent_workers=True  # Keep workers alive)
+        - Data pinning
+        - worker threads of 8
+        - prefetch_factor = 4
+        - Keep workers alive (persistent_workers)
+    -   Batch size changed to 32
+    -   AMP autocast disabled (forward pass with FP32), with grad scalar enabled (backward pass mixed precision)
+    -   Batch throughput:  84-88 (examples seen)
+    -   Training loss at 27-28 at 100 steps
+    -   Train loss/rank corr at -2.93 at 100 steps
+
+```
+Epoch [0] Step [22 / 147,631] Batch [137 / 885,786] Lr: [2.2e-05], Avg Loss [30.162], Rank Corr.: [0.387%], Batch Time: [2.199 s], Total train time: [317.582 s], Batch count: [138], Avg batch time [2.301 s], Throughput: [87.3 ex/s]  13,451.922 ms,       320.93 s total
+```
+
+```
+data_pi@DESKTOP-OBJ3JKF:/mnt/c/Users/data_pi/Documents/programming/chess-hackathon$ ./check_gpu_stats.sh
+timestamp, name, utilization.gpu [%], utilization.memory [%], memory.total [MiB], memory.free [MiB], memory.used [MiB], temperature.gpu, power.draw [W]
+025/03/21 02:06:50.642, NVIDIA GeForce RTX 3090, 3 %, 2 %, 24576 MiB, 22382 MiB, 1945 MiB, 36, 38.63 W
+2025/03/21 02:06:51.651, NVIDIA GeForce RTX 3090, 19 %, 3 %, 24576 MiB, 22379 MiB, 1948 MiB, 36, 36.19 W
+2025/03/21 02:06:52.661, NVIDIA GeForce RTX 3090, 2 %, 2 %, 24576 MiB, 22377 MiB, 1950 MiB, 36, 38.41 W
+2025/03/21 02:06:53.669, NVIDIA GeForce RTX 3090, 36 %, 7 %, 24576 MiB, 22377 MiB, 1950 MiB, 36, 37.08 W
+2025/03/21 02:06:54.679, NVIDIA GeForce RTX 3090, 17 %, 2 %, 24576 MiB, 22377 MiB, 1950 MiB, 36, 38.45 W
+2025/03/21 02:06:55.692, NVIDIA GeForce RTX 3090, 1 %, 2 %, 24576 MiB, 22388 MiB, 1939 MiB, 36, 38.28 W
+2025/03/21 02:06:56.702, NVIDIA GeForce RTX 3090, 16 %, 2 %, 24576 MiB, 22388 MiB, 1939 MiB, 36, 37.59 W
+2025/03/21 02:06:57.710, NVIDIA GeForce RTX 3090, 7 %, 3 %, 24576 MiB, 22379 MiB, 1948 MiB, 36, 36.33 W
+2025/03/21 02:06:58.734, NVIDIA GeForce RTX 3090, 29 %, 6 %, 24576 MiB, 22382 MiB, 1945 MiB, 36, 35.29 W
+2025/03/21 02:06:59.746, NVIDIA GeForce RTX 3090, 7 %, 4 %, 24576 MiB, 22388 MiB, 1939 MiB, 36, 38.64 W
+2025/03/21 02:07:00.755, NVIDIA GeForce RTX 3090, 25 %, 7 %, 24576 MiB, 22388 MiB, 1939 MiB, 36, 37.08 W
+```
+
+```
+--------------------------------------------------------------------------------
+  Environment Summary
+--------------------------------------------------------------------------------
+PyTorch 2.3.1+cu121 DEBUG compiled w/ CUDA 12.1
+Running with Python 3.10 and CUDA 11.8.89
+
+`pip3 list` truncated output:
+numpy==1.26.4
+torch==2.3.1
+torch-geometric==2.6.0
+torchvision==0.18.1
+triton==2.3.1
+--------------------------------------------------------------------------------
+  cProfile output
+--------------------------------------------------------------------------------
+         8255353 function calls (8211910 primitive calls) in 151.110 seconds
+
+   Ordered by: internal time
+   List reduced from 7151 to 15 due to restriction <15>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+    90985   75.502    0.001   75.502    0.001 {built-in method posix.stat}
+     3275   42.669    0.013   48.247    0.015 {built-in method builtins.sorted}
+     3202    5.644    0.002    5.644    0.002 {method 'index' of 'list' objects}
+       50    4.726    0.095    4.726    0.095 {method 'run_backward' of 'torch._C._EngineBase' objects}
+    11962    3.493    0.000    3.493    0.000 {built-in method posix.lstat}
+       12    2.132    0.178    2.132    0.178 {method 'tolist' of 'torch._C.TensorBase' objects}
+      350    2.122    0.006    4.857    0.014 {built-in method torch.conv2d}
+     1327    1.850    0.001    1.850    0.001 {built-in method io.open_code}
+        3    1.260    0.420    1.260    0.420 {built-in method torch.randperm}
+        1    0.697    0.697    0.697    0.697 {built-in method torch._C._distributed_c10d._verify_params_across_processes}
+     1328    0.669    0.001    0.669    0.001 {method 'read' of '_io.BufferedReader' objects}
+     1375    0.648    0.000    0.648    0.000 {method '__exit__' of '_io._IOBase' objects}
+    33/31    0.444    0.013    0.453    0.015 {built-in method _imp.create_dynamic}
+    10621    0.444    0.000   70.767    0.007 /usr/lib/python3.10/traceback.py:338(extract)
+        1    0.424    0.424  151.112  151.112 train.py:1(<module>)
+
+
+--------------------------------------------------------------------------------
+  autograd profiler output (CPU mode)
+--------------------------------------------------------------------------------
+        top 15 events sorted by cpu_time_total
+
+-----------------------------------  ------------  ------------  ------------  ------------  ------------  ------------
+                               Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg    # of Calls
+-----------------------------------  ------------  ------------  ------------  ------------  ------------  ------------
+    DistributedDataParallel.forward        24.53%   -5088.000us     -6614.21%        1.372s        1.372s             1
+    DistributedDataParallel.forward        -9.51%       1.973ms     -6575.83%        1.364s        1.364s             1
+    DistributedDataParallel.forward       -10.13%       2.101ms     -6559.27%        1.361s        1.361s             1
+    DistributedDataParallel.forward       -10.16%       2.108ms     -6493.39%        1.347s        1.347s             1
+    DistributedDataParallel.forward        -9.69%       2.011ms     -6485.87%        1.346s        1.346s             1
+    DistributedDataParallel.forward       -10.64%       2.207ms     -6481.87%        1.345s        1.345s             1
+    DistributedDataParallel.forward        74.66%  -15489.000us     -6479.59%        1.344s        1.344s             1
+    DistributedDataParallel.forward        23.96%   -4970.000us     -6473.66%        1.343s        1.343s             1
+    DistributedDataParallel.forward       -10.64%       2.208ms     -6472.72%        1.343s        1.343s             1
+    DistributedDataParallel.forward       -16.35%       3.393ms     -6470.04%        1.342s        1.342s             1
+    DistributedDataParallel.forward       -11.94%       2.478ms     -6458.99%        1.340s        1.340s             1
+    DistributedDataParallel.forward        -9.18%       1.904ms     -6428.63%        1.334s        1.334s             1
+    DistributedDataParallel.forward        27.52%   -5709.000us     -6427.19%        1.333s        1.333s             1
+    DistributedDataParallel.forward        27.57%   -5719.000us     -6421.21%        1.332s        1.332s             1
+    DistributedDataParallel.forward        20.02%   -4154.000us     -6415.42%        1.331s        1.331s             1
+-----------------------------------  ------------  ------------  ------------  ------------  ------------  ------------
+Self CPU time total: -20746.000us
+
+--------------------------------------------------------------------------------
+  autograd profiler output (CUDA mode)
+--------------------------------------------------------------------------------
+        top 15 events sorted by cpu_time_total
+
+        Because the autograd profiler uses the CUDA event API,
+        the CUDA time column reports approximately max(cuda_time, cpu_time).
+        Please ignore this output if your code does not use CUDA.
+
+-----------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------
+                               Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls
+-----------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------
+    DistributedDataParallel.forward         6.19%       2.961ms      3326.87%        1.592s        1.592s       1.279ms         7.56%        1.592s        1.592s             1
+    DistributedDataParallel.forward         8.02%       3.841ms      2891.41%        1.384s        1.384s       1.363ms         8.06%        1.384s        1.384s             1
+    DistributedDataParallel.forward         7.40%       3.543ms      2879.84%        1.378s        1.378s     989.000us         5.85%        1.378s        1.378s             1
+    DistributedDataParallel.forward         7.13%       3.414ms      2819.34%        1.350s        1.350s       1.543ms         9.12%        1.349s        1.349s             1
+    DistributedDataParallel.forward         6.41%       3.068ms      2796.58%        1.339s        1.339s       1.258ms         7.44%        1.339s        1.339s             1
+    DistributedDataParallel.forward         6.37%       3.051ms      2791.80%        1.336s        1.336s     944.000us         5.58%        1.336s        1.336s             1
+    DistributedDataParallel.forward         7.44%       3.560ms      2767.96%        1.325s        1.325s     953.000us         5.64%        1.325s        1.325s             1
+    DistributedDataParallel.forward         6.33%       3.030ms      2764.64%        1.323s        1.323s     839.000us         4.96%        1.323s        1.323s             1
+    DistributedDataParallel.forward         6.28%       3.008ms      2752.58%        1.318s        1.318s       1.093ms         6.46%        1.317s        1.317s             1
+    DistributedDataParallel.forward         6.69%       3.201ms      2739.66%        1.311s        1.311s       1.415ms         8.37%        1.309s        1.309s             1
+    DistributedDataParallel.forward         6.38%       3.054ms      2737.54%        1.310s        1.310s       1.208ms         7.14%        1.310s        1.310s             1
+    DistributedDataParallel.forward         7.03%       3.363ms      2735.03%        1.309s        1.309s     936.000us         5.53%        1.310s        1.310s             1
+    DistributedDataParallel.forward         6.24%       2.987ms      2734.34%        1.309s        1.309s       1.129ms         6.68%        1.309s        1.309s             1
+    DistributedDataParallel.forward         5.95%       2.850ms      2731.28%        1.307s        1.307s     729.000us         4.31%        1.307s        1.307s             1
+    DistributedDataParallel.forward         6.13%       2.935ms      2730.57%        1.307s        1.307s       1.234ms         7.30%        1.307s        1.307s             1
+-----------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------
+Self CPU time total: 47.866ms
+Self CUDA time total: 16.912ms
+```
+
+#### Training session 3
+
+    -   Chess vision model (last winner)
+    -   Base training script with profiler (can enable/disable, default is false)
+    -   Dataloaders during training (num_workers=8, pin_memory=True, prefetch_factor=4,  # Add prefetching, persistent_workers=True  # Keep workers alive)
+        - Data pinning
+        - worker threads of 8
+        - prefetch_factor = 4
+        - Keep workers alive (persistent_workers)
+    -   Batch size changed to 32
+    -   AMP autocast disabled (forward pass with FP32), with grad scalar enabled (backward pass mixed precision)
+    -   Model configs changed:
+        - Make larger, from 1M to 12.8M params (12,798,081)
+            nlayers: 4
+            embed_dim: 256
+            inner_dim: 352
+            attention_dim: 224
+    -   Use flash attention
+    -   Batch throughput:  84-88 (examples seen)
+    -   Training loss at 27-28 at 100 steps
+    -   Train loss/rank corr at -2.93 at 100 steps
+
+```
+Epoch [0] Step [25 / 147,631] Batch [155 / 885,786] Lr: [2.5e-05], Avg Loss [28.576], Rank Corr.: [-13.722%], Batch Time: [1.447 s], Total train time: [235.229 s], Batch count: [156], Avg batch time [1.508 s], Throughput: [132.7 ex/s]   9,641.366 ms,       235.80 s total
+```
+
+```
+data_pi@DESKTOP-OBJ3JKF:/mnt/c/Users/data_pi/Documents/programming/chess-hackathon$ ./check_gpu_stats.sh
+timestamp, name, utilization.gpu [%], utilization.memory [%], memory.total [MiB], memory.free [MiB], memory.used [MiB], temperature.gpu, power.draw [W]
+2025/03/21 04:44:07.665, NVIDIA GeForce RTX 3090, 19 %, 5 %, 24576 MiB, 22154 MiB, 2173 MiB, 35, 40.72 W
+2025/03/21 04:44:08.672, NVIDIA GeForce RTX 3090, 5 %, 4 %, 24576 MiB, 22154 MiB, 2173 MiB, 35, 43.28 W
+2025/03/21 04:44:09.686, NVIDIA GeForce RTX 3090, 14 %, 2 %, 24576 MiB, 22157 MiB, 2170 MiB, 35, 41.70 W
+2025/03/21 04:44:10.694, NVIDIA GeForce RTX 3090, 14 %, 1 %, 24576 MiB, 22157 MiB, 2170 MiB, 35, 41.97 W
+2025/03/21 04:44:11.703, NVIDIA GeForce RTX 3090, 31 %, 14 %, 24576 MiB, 22159 MiB, 2168 MiB, 35, 44.06 W
+2025/03/21 04:44:12.710, NVIDIA GeForce RTX 3090, 13 %, 7 %, 24576 MiB, 22159 MiB, 2168 MiB, 35, 40.71 W
+2025/03/21 04:44:13.724, NVIDIA GeForce RTX 3090, 11 %, 2 %, 24576 MiB, 22159 MiB, 2168 MiB, 35, 39.95 W
+2025/03/21 04:44:14.732, NVIDIA GeForce RTX 3090, 58 %, 32 %, 24576 MiB, 22159 MiB, 2168 MiB, 35, 40.47 W
+2025/03/21 04:44:15.744, NVIDIA GeForce RTX 3090, 11 %, 2 %, 24576 MiB, 22159 MiB, 2168 MiB, 35, 43.37 W
+2025/03/21 04:44:16.751, NVIDIA GeForce RTX 3090, 13 %, 2 %, 24576 MiB, 22159 MiB, 2168 MiB, 35, 42.99 W
+2025/03/21 04:44:17.762, NVIDIA GeForce RTX 3090, 44 %, 21 %, 24576 MiB, 22159 MiB, 2168 MiB, 35, 40.41 W
+2025/03/21 04:44:18.770, NVIDIA GeForce RTX 3090, 10 %, 8 %, 24576 MiB, 22159 MiB, 2168 MiB, 35, 39.34 W
+2025/03/21 04:44:19.784, NVIDIA GeForce RTX 3090, 18 %, 2 %, 24576 MiB, 22157 MiB, 2170 MiB, 35, 43.51 W
+2025/03/21 04:44:20.792, NVIDIA GeForce RTX 3090, 8 %, 0 %, 24576 MiB, 22109 MiB, 2218 MiB, 37, 100.66 W
+```
+
 ## Notes
 
 to train:

@@ -8,6 +8,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, random_split
 from torch.utils.tensorboard import SummaryWriter
+from torch.cuda.amp import autocast, GradScaler
 import torch.autograd.profiler as profiler
 from pathlib import Path
 import argparse
@@ -46,7 +47,7 @@ def get_args_parser():
         type=Path,
         default="/root/chess-hackathon/recover/checkpoint.pt",
     )
-    parser.add_argument("--bs", help="batch size", type=int, default=64)
+    parser.add_argument("--bs", help="batch size", type=int, default=32)
     parser.add_argument("--lr", help="learning rate", type=float, default=0.001)
     parser.add_argument("--wd", help="weight decay", type=float, default=0.01)
     parser.add_argument(
@@ -60,6 +61,12 @@ def get_args_parser():
     )
     parser.add_argument(
         "--dataset-id", help="Dataset ID for the dataset", type=str, default=''
+    )
+    parser.add_argument(
+        "--stop-after-test-max-limit-train-batches", action="store_true", help="Stop training after our max limit batches", default=False
+    )
+    parser.add_argument(
+        "--amp-enabled", help="Enable Automatic Mixed Precision (AMP)", type=bool, default=True
     )
     return parser
 
@@ -93,6 +100,9 @@ def spearmans_rho(a, b):
 
 def main(args, timer):
     TESTING_LOCAL = True
+    global_batch_count = 0
+    global_batch_max_limit = 50
+    global_batch_start_time = time.time()  
     if TESTING_LOCAL:
         rank = int(os.environ.get("RANK", 0))  # Default to 0 if not set
         args.world_size = int(
@@ -120,7 +130,8 @@ def main(args, timer):
             os.environ["WORLD_SIZE"]
         )  # Total number of GPUs in the cluster
         args.device_id = int(os.environ["LOCAL_RANK"])  # Rank on local node
-    dist.init_process_group("nccl")  # Expects RANK set in environment variable
+    if not dist.is_initialized():
+        dist.init_process_group("nccl")  # Expects RANK set in environment variable
     args.is_master = rank == 0  # Master node for saving / reporting
     torch.cuda.set_device(args.device_id)  # Enables calling 'cuda'
     torch.autograd.set_detect_anomaly(True)
@@ -157,10 +168,37 @@ def main(args, timer):
 
     train_sampler = InterruptableDistributedSampler(train_dataset)
     test_sampler = InterruptableDistributedSampler(test_dataset)
+
+    dataloader_num_workers = 8
+    dataloader_prefetch_factor = 4
+    dataloader_persistent_workers = True
+    if args.stop_after_test_max_limit_train_batches:
+        # TODO(piydatta): Remove once bug in torch.utils.bottleneck is gone.
+        # Multiple workers for dataloader is not supported.
+        # [rank0]:[W profiler_kineto.cpp:472] 
+        # Failed to record CUDA event. ../torch/csrc/profiler/stubs/cuda.cpp:48: CUDA initialization error. This can occur if one runs the profiler in CUDA mode on code that creates a DataLoader with num_workers > 0. This operation is currently unsupported; potential workarounds are: (1) don't use the profiler in CUDA mode or (2) use num_workers=0 in the DataLoader or (3) Don't profile the data loading portion of your code. https://github.com/pytorch/pytorch/issues/6313 tracks profiler support for multi-worker DataLoader.
+        dataloader_num_workers = 0
+        dataloader_prefetch_factor = None
+        dataloader_persistent_workers = False
+    print(f"Loading dataloaders with {dataloader_num_workers} workers")
     train_dataloader = DataLoader(
-        train_dataset, batch_size=args.bs, sampler=train_sampler
+        train_dataset, 
+        batch_size=args.bs, 
+        sampler=train_sampler,
+        num_workers=dataloader_num_workers,  # Add workers for data loading
+        pin_memory=True,  # Speed up GPU transfers
+        prefetch_factor=dataloader_prefetch_factor,  # Add prefetching
+        persistent_workers=dataloader_persistent_workers  # Keep workers alive
     )
-    test_dataloader = DataLoader(test_dataset, batch_size=args.bs, sampler=test_sampler)
+    test_dataloader = DataLoader(
+        test_dataset, 
+        batch_size=args.bs, 
+        sampler=test_sampler,
+        num_workers=dataloader_num_workers,
+        pin_memory=True,  # Speed up GPU transfers
+        prefetch_factor=dataloader_prefetch_factor,  # Add prefetching
+        persistent_workers=dataloader_persistent_workers  # Keep workers alive
+    )
     timer.report("Prepared dataloaders")
 
     model_config = yaml.safe_load(open(args.model_config))
@@ -174,7 +212,7 @@ def main(args, timer):
     params = sum([torch.prod(torch.tensor(p.size())) for p in model_parameters])
     timer.report(f"Initialized model with {params:,} params, moved to device")
 
-    model = DDP(model, device_ids=[args.device_id])
+    model = DDP(model, device_ids=[args.device_id], static_graph=True)
     timer.report("Prepared model for distributed training")
 
     loss_fn = nn.MSELoss(reduction="sum")
@@ -202,6 +240,7 @@ def main(args, timer):
         if os.path.isfile(args.load_path):
             checkpoint_path = args.load_path
 
+    scaler = GradScaler(enabled=args.amp_enabled)
     if checkpoint_path:
         timer.report(f"Loading checkpoint from {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=f"cuda:{args.device_id}")
@@ -212,7 +251,11 @@ def main(args, timer):
         metrics = checkpoint["metrics"]
         timer = checkpoint["timer"]
         timer.start_time = time.time()
+        if "scaler" in checkpoint:
+            scaler.load_state_dict(checkpoint["scaler"])
         timer.report("Retrieved saved checkpoint")
+    else:
+        print(f"No checkpoint path at {checkpoint_path}, not loading checkpoint.")
 
     ## TRAINING
 
@@ -229,10 +272,15 @@ def main(args, timer):
         optimizer.zero_grad()
         model.train()
 
-        # Enable profiling on the first few batches for detailed timing.
-        profiling_enabled = (epoch in (0,1,2,3,4,5))
+        # Disable/Enable profiling on the first few batches for detailed timing.
+        profiling_enabled = False 
+        # profiling_enabled = (epoch in (0,1,2,3,4,5))
 
         for boards, scores in train_dataloader:
+            global_batch_count += 1
+            if args.stop_after_test_max_limit_train_batches and global_batch_count > global_batch_max_limit:
+                timer.report(f"Stopping training after {global_batch_max_limit} batches as requested.")
+                break
             # Start timing the batch
             batch_start_time = time.time()  
             # Determine the current step
@@ -242,38 +290,62 @@ def main(args, timer):
             is_save_batch = ((batch + 1) % args.save_steps == 0) or is_last_batch
 
             # If profiling is enabled, use the context manager for a specific training step.
-            if profiling_enabled and is_accum_batch:
+            if profiling_enabled and is_save_batch:
                 with profiler.profile(record_shapes=True, use_cuda=True) as prof:
+                    boards, scores = boards.to(args.device_id,non_blocking=True), scores.to(args.device_id,non_blocking=True)
                     scores = logish_transform(scores)
-                    boards, scores = boards.to(args.device_id), scores.to(args.device_id)
                     logits = model(boards)
                     loss = loss_fn(logits, scores) / args.grad_accum
                     loss.backward()
+                prof.export_chrome_trace(chrome_trace_file)
+                # print(prof.key_averages().table(row_limit=10))
+                print("Outputting key averages")
+                print(prof.key_averages().table(row_limit=10, top_level_events_only=True))
             else:
+                boards, scores = boards.to(args.device_id,non_blocking=True), scores.to(args.device_id,non_blocking=True)
                 scores = logish_transform(scores)  # suspect this might help
-                boards, scores = boards.to(args.device_id), scores.to(args.device_id)
+                # TODO(Piyush): Enable autocast once the bug is resolved
+                # BUG: https://github.com/pytorch/pytorch/issues/40497
+                # This always leads to NaN issues
+                # with autocast(enabled=args.amp_enabled):
+                with autocast(enabled=False):
+                    logits = model(boards)
+                    loss = loss_fn(logits, scores) / args.grad_accum
 
-                logits = model(boards)
-                loss = loss_fn(logits, scores) / args.grad_accum
-
-                loss.backward()
+            if args.amp_enabled:
+                scaler.scale(loss).backward()
+            else:
+                scaler.scale(loss).backward()
 
             train_dataloader.sampler.advance(len(scores))
 
             # How accurately do our model scores rank the batch of moves?
             rank_corr = spearmans_rho(logits, scores)
-
+            # Compute batch time
+            batch_time = time.time() - batch_start_time
+            total_train_time = time.time() - global_batch_start_time
+            avg_batch_time = total_train_time /  global_batch_count
+            # Update running metrics for average batch time
             metrics["train"].update(
                 {
                     "examples_seen": len(scores),
                     "accum_loss": loss.item() * args.grad_accum,  # undo loss scale
                     "rank_corr": rank_corr,
+                    "total_train_time": total_train_time,
+                    "batch_count": global_batch_count,
+                    "avg_batch_time": avg_batch_time
                 }
             )
 
             if is_accum_batch or is_last_batch:
-
-                optimizer.step()
+                if args.amp_enabled:
+                    # Gradient clipping
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0, error_if_nonfinite=True)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
                 optimizer.zero_grad()
                 step = batch // args.grad_accum
 
@@ -291,16 +363,12 @@ def main(args, timer):
                     * rpt["rank_corr"]
                     / ((batch % args.grad_accum + 1) * args.world_size)
                 )
-                # Compute batch time and throughput
-                batch_time = time.time() - batch_start_time
                 throughput = rpt["examples_seen"] / batch_time
                 # report
                 report = f"""\ 
 Epoch [{epoch:,}] Step [{step:,} / {train_steps_per_epoch:,}] Batch [{batch:,} / {train_batches_per_epoch:,}] Lr: [{lr_factor * args.lr:,.3}], \
-Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Batch Time: [{batch_time:.3f} s], Throughput: [{throughput:.1f} ex/s]"""
+Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Batch Time: [{batch_time:.3f} s], Total train time: [{total_train_time:.3f} s], Batch count: [{global_batch_count:,}], Avg batch time [{avg_batch_time:.3f} s], Throughput: [{throughput:.1f} ex/s]"""
                 timer.report(report)
-                metrics["train"].reset_local()
-
                 if args.is_master:
                     total_progress = batch + epoch * train_batches_per_epoch
                     writer.add_scalar("train/learn_rate", next_lr, total_progress)
@@ -308,11 +376,9 @@ Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Batch Time: [{b
                     writer.add_scalar("train/batch_rank_corr", rpt_rank_corr, total_progress)
                     writer.add_scalar("train/batch_time", batch_time, total_progress)
                     writer.add_scalar("train/throughput", throughput, total_progress)
+                    writer.add_scalar("train/avg_batch_time", avg_batch_time, total_progress)
                     chrome_trace_file = os.path.join(os.environ["CHECKPOINT_ARTIFACT_PATH"], f"chrome_trace_epoch_{epoch}_step_{step}.json")
-                    prof.export_chrome_trace(chrome_trace_file)
-                    # print(prof.key_averages().table(row_limit=10))
-                    print("Outputting key averages")
-                    print(prof.key_averages().table(row_limit=10, top_level_events_only=True))
+                metrics["train"].reset_local()
 
             # Saving
             if is_save_batch:
@@ -328,11 +394,17 @@ Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Batch Time: [{b
                             "test_sampler": test_dataloader.sampler.state_dict(),
                             "metrics": metrics,
                             "timer": timer,
+                            "scaler": scaler.state_dict()
                         },
                         os.path.join(checkpoint_directory, "checkpoint.pt"),
                     )
                 print(f"Saving checkpoint to {checkpoint_directory}")
                 saver.symlink_latest(checkpoint_directory)
+
+        # Check if we should exit training after the current epoch
+        if args.stop_after_test_max_limit_train_batches and global_batch_count > global_batch_max_limit:
+            timer.report(f"Stopping training after {global_batch_max_limit} batches as requested.")
+            break  
 
         ## TESTING ##
 

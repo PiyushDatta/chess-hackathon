@@ -1,0 +1,2 @@
+# Show GPU memory usage, utilization, power etc.
+nvidia-smi --query-gpu=timestamp,name,utilization.gpu,utilization.memory,memory.total,memory.free,memory.used,temperature.gpu,power.draw --format=csv -l 1
