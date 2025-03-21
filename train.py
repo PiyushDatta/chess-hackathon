@@ -242,7 +242,7 @@ def main(args, timer):
             is_save_batch = ((batch + 1) % args.save_steps == 0) or is_last_batch
 
             # If profiling is enabled, use the context manager for a specific training step.
-            if profiling_enabled:
+            if profiling_enabled and is_accum_batch:
                 with profiler.profile(record_shapes=True, use_cuda=True) as prof:
                     scores = logish_transform(scores)
                     boards, scores = boards.to(args.device_id), scores.to(args.device_id)
@@ -331,7 +331,7 @@ Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Batch Time: [{b
                         },
                         os.path.join(checkpoint_directory, "checkpoint.pt"),
                     )
-                # print(f"Saving checkpoint to {checkpoint_directory}")
+                print(f"Saving checkpoint to {checkpoint_directory}")
                 saver.symlink_latest(checkpoint_directory)
 
         ## TESTING ##
