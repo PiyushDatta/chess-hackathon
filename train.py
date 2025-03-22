@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.utils.data import DataLoader, random_split
 from torch.utils.tensorboard import SummaryWriter
 from torch.cuda.amp import autocast, GradScaler
@@ -47,11 +48,11 @@ def get_args_parser():
         type=Path,
         default="/root/chess-hackathon/recover/checkpoint.pt",
     )
-    parser.add_argument("--bs", help="batch size", type=int, default=32)
+    parser.add_argument("--bs", help="batch size", type=int, default=64)
     parser.add_argument("--lr", help="learning rate", type=float, default=0.001)
     parser.add_argument("--wd", help="weight decay", type=float, default=0.01)
     parser.add_argument(
-        "--ws", help="learning rate warm up steps", type=int, default=1000
+        "--ws", help="learning rate warm up steps", type=int, default=25
     )
     parser.add_argument(
         "--grad-accum", help="gradient accumulation steps", type=int, default=6
@@ -66,7 +67,10 @@ def get_args_parser():
         "--stop-after-test-max-limit-train-batches", action="store_true", help="Stop training after our max limit batches", default=False
     )
     parser.add_argument(
-        "--amp-enabled", help="Enable Automatic Mixed Precision (AMP)", type=bool, default=True
+        "--amp-enabled", help="Enable/Disable Automatic Mixed Precision (AMP)", type=bool, default=True
+    )
+    parser.add_argument(
+        "--fsdp-enabled", help="Enable/Disable Fully Sharded Data Parallel (FSDP) training", type=bool, default=True
     )
     return parser
 
@@ -212,8 +216,14 @@ def main(args, timer):
     params = sum([torch.prod(torch.tensor(p.size())) for p in model_parameters])
     timer.report(f"Initialized model with {params:,} params, moved to device")
 
-    model = DDP(model, device_ids=[args.device_id], static_graph=True)
-    timer.report("Prepared model for distributed training")
+    # Use FSDP if enabled; else fall back to DDP.
+    do_barrier = False
+    if args.fsdp_enabled:
+        model = FSDP(model)
+        timer.report("Using FSDP for distributed training")
+    else:
+        model = DDP(model, device_ids=[args.device_id])
+        timer.report("Using DDP for distributed training")
 
     loss_fn = nn.MSELoss(reduction="sum")
     optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=args.wd)
@@ -242,9 +252,14 @@ def main(args, timer):
 
     scaler = GradScaler(enabled=args.amp_enabled)
     if checkpoint_path:
+        # load checkpoint
         timer.report(f"Loading checkpoint from {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=f"cuda:{args.device_id}")
-        model.module.load_state_dict(checkpoint["model"])
+        # For DDP, the underlying module is stored under model.module
+        if args.fsdp_enabled:
+            model.load_state_dict(checkpoint["model"])
+        else:
+            model.module.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         train_dataloader.sampler.load_state_dict(checkpoint["train_sampler"])
         test_dataloader.sampler.load_state_dict(checkpoint["test_sampler"])
@@ -254,6 +269,8 @@ def main(args, timer):
         if "scaler" in checkpoint:
             scaler.load_state_dict(checkpoint["scaler"])
         timer.report("Retrieved saved checkpoint")
+        if do_barrier:
+            dist.barrier()
     else:
         print(f"No checkpoint path at {checkpoint_path}, not loading checkpoint.")
 
@@ -315,7 +332,7 @@ def main(args, timer):
             if args.amp_enabled:
                 scaler.scale(loss).backward()
             else:
-                scaler.scale(loss).backward()
+                loss.backward()
 
             train_dataloader.sampler.advance(len(scores))
 
@@ -386,9 +403,11 @@ Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Batch Time: [{b
 
                 if args.is_master:
                     # Save checkpoint
+                    if do_barrier:
+                        dist.barrier()
                     atomic_torch_save(
                         {
-                            "model": model.module.state_dict(),
+                            "model": model.module.state_dict() if args.fsdp_enabled is False else model.state_dict(),
                             "optimizer": optimizer.state_dict(),
                             "train_sampler": train_dataloader.sampler.state_dict(),
                             "test_sampler": test_dataloader.sampler.state_dict(),
@@ -471,9 +490,11 @@ Avg Loss [{avg_loss:,.3f}], Rank Corr.: [{rpt_rank_corr:,.3f}%], Batch Time: [{b
 
                     if args.is_master:
                         # Save checkpoint
+                        if do_barrier:
+                            dist.barrier()
                         atomic_torch_save(
                             {
-                                "model": model.module.state_dict(),
+                                "model": model.module.state_dict() if args.fsdp_enabled is False else model.state_dict(),
                                 "optimizer": optimizer.state_dict(),
                                 "train_sampler": train_dataloader.sampler.state_dict(),
                                 "test_sampler": test_dataloader.sampler.state_dict(),

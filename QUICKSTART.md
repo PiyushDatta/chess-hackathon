@@ -183,12 +183,12 @@ Self CUDA time total: 16.912ms
             inner_dim: 352
             attention_dim: 224
     -   Use flash attention
-    -   Batch throughput:  84-88 (examples seen)
+    -   Batch throughput:  55-65 (examples seen)
     -   Training loss at 27-28 at 100 steps
     -   Train loss/rank corr at -2.93 at 100 steps
 
 ```
-Epoch [0] Step [25 / 147,631] Batch [155 / 885,786] Lr: [2.5e-05], Avg Loss [28.576], Rank Corr.: [-13.722%], Batch Time: [1.447 s], Total train time: [235.229 s], Batch count: [156], Avg batch time [1.508 s], Throughput: [132.7 ex/s]   9,641.366 ms,       235.80 s total
+Epoch [0] Step [8 / 147,631] Batch [53 / 885,786] Lr: [8e-06], Avg Loss [27.029], Rank Corr.: [-5.021%], Batch Time: [3.367 s], Total train time: [188.297 s], Batch count: [54], Avg batch time [3.487 s], Throughput: [57.0 ex/s]  20,438.752 ms,       192.50 s total
 ```
 
 ```
@@ -208,6 +208,47 @@ timestamp, name, utilization.gpu [%], utilization.memory [%], memory.total [MiB]
 2025/03/21 04:44:18.770, NVIDIA GeForce RTX 3090, 10 %, 8 %, 24576 MiB, 22159 MiB, 2168 MiB, 35, 39.34 W
 2025/03/21 04:44:19.784, NVIDIA GeForce RTX 3090, 18 %, 2 %, 24576 MiB, 22157 MiB, 2170 MiB, 35, 43.51 W
 2025/03/21 04:44:20.792, NVIDIA GeForce RTX 3090, 8 %, 0 %, 24576 MiB, 22109 MiB, 2218 MiB, 37, 100.66 W
+```
+
+#### Training session 3
+
+    -   Chess vision model (last winner)
+    -   Base training script with profiler (can enable/disable, default is false)
+    -   Dataloaders during training (num_workers=8, pin_memory=True, prefetch_factor=4,  # Add prefetching, persistent_workers=True  # Keep workers alive)
+        - Data pinning
+        - worker threads of 8
+        - prefetch_factor = 4
+        - Keep workers alive (persistent_workers)
+    -   Batch size changed to 32
+    -   AMP with grad scalar enabled (backward pass mixed precision), but with autocast disabled (forward pass with FP32)
+    -   Using FSDP instead of DDP
+    -   Model configs changed:
+        - Make larger, from 1M to 12.8M params (12,798,081)
+            nlayers: 4
+            embed_dim: 256
+            inner_dim: 352
+            attention_dim: 224
+    -   Use flash attention
+    -   Batch throughput:  84-88 (examples seen)
+    -   Training loss at 27-28 at 100 steps
+    -   Train loss/rank corr at -2.93 at 100 steps
+
+```
+Epoch [0] Step [21 / 147,631] Batch [131 / 885,786] Lr: [2.1e-05], Avg Loss [27.309], Rank Corr.: [0.509%], Batch Time: [3.963 s], Total train time: [548.317 s], Batch count: [132], Avg batch time [4.154 s], Throughput: [48.5 ex/s]  23,947.377 ms,       552.39 s total
+```
+
+```
+2025/03/21 17:25:32.797, NVIDIA GeForce RTX 3090, 24 %, 5 %, 24576 MiB, 22303 MiB, 2024 MiB, 34, 36.13 W
+2025/03/21 17:25:33.812, NVIDIA GeForce RTX 3090, 5 %, 3 %, 24576 MiB, 22302 MiB, 2025 MiB, 34, 36.76 W
+2025/03/21 17:25:34.820, NVIDIA GeForce RTX 3090, 8 %, 4 %, 24576 MiB, 22304 MiB, 2023 MiB, 34, 32.89 W
+2025/03/21 17:25:35.835, NVIDIA GeForce RTX 3090, 8 %, 4 %, 24576 MiB, 22304 MiB, 2023 MiB, 34, 33.40 W
+2025/03/21 17:25:36.844, NVIDIA GeForce RTX 3090, 61 %, 28 %, 24576 MiB, 22299 MiB, 2028 MiB, 34, 35.66 W
+2025/03/21 17:25:37.853, NVIDIA GeForce RTX 3090, 36 %, 26 %, 24576 MiB, 22294 MiB, 2033 MiB, 34, 38.44 W
+2025/03/21 17:25:38.861, NVIDIA GeForce RTX 3090, 5 %, 3 %, 24576 MiB, 22295 MiB, 2032 MiB, 34, 32.76 W
+2025/03/21 17:25:39.870, NVIDIA GeForce RTX 3090, 6 %, 3 %, 24576 MiB, 22294 MiB, 2033 MiB, 34, 32.29 W
+2025/03/21 17:25:40.879, NVIDIA GeForce RTX 3090, 53 %, 22 %, 24576 MiB, 22298 MiB, 2029 MiB, 34, 34.98 W
+2025/03/21 17:25:41.890, NVIDIA GeForce RTX 3090, 17 %, 2 %, 24576 MiB, 22303 MiB, 2024 MiB, 34, 39.00 W
+2025/03/21 17:25:42.898, NVIDIA GeForce RTX 3090, 6 %, 4 %, 24576 MiB, 22308 MiB, 2019 MiB, 34, 33.97
 ```
 
 ## Notes
