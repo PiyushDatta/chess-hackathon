@@ -28,10 +28,34 @@ from cycling_utils import (
 
 from utils.optimizers import Lamb
 from utils.datasets import EVAL_HDF_Dataset
+from torch.utils.data import Sampler
 from model import Model
 
 timer.report("Completed imports")
 
+class InterruptableCPUSampler(Sampler):
+    def __init__(self, dataset, shuffle=True, seed=42):
+        self.dataset = dataset
+        self.shuffle = shuffle
+        self.seed = seed
+        self.epoch = 0
+        self.indices = None
+
+    def __iter__(self):
+        if self.shuffle:
+            # Shuffle indices based on epoch and seed
+            rng = np.random.RandomState(self.seed + self.epoch)
+            self.indices = rng.permutation(len(self.dataset))
+        else:
+            self.indices = np.arange(len(self.dataset))
+
+        return iter(self.indices)
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def set_epoch(self, epoch):
+        self.epoch = epoch
 
 def get_args_parser():
     parser = argparse.ArgumentParser()
@@ -54,7 +78,7 @@ def get_args_parser():
         "--ws", help="learning rate warm up steps", type=int, default=25
     )
     parser.add_argument(
-        "--grad-accum", help="gradient accumulation steps", type=int, default=6
+        "--grad-accum", help="gradient accumulation steps", type=int, default=5
     )
     parser.add_argument(
         "--save-steps", help="saving interval steps", type=int, default=25
@@ -69,7 +93,7 @@ def get_args_parser():
         "--amp-enabled", help="Enable/Disable Automatic Mixed Precision (AMP)", type=bool, default=True
     )
     parser.add_argument(
-        "--fsdp-enabled", help="Enable/Disable Fully Sharded Data Parallel (FSDP) training", type=bool, default=True
+        "--fsdp-enabled", help="Enable/Disable Fully Sharded Data Parallel (FSDP) training", type=bool, default=False
     )
     return parser
 
@@ -102,7 +126,8 @@ def spearmans_rho(a, b):
 
 
 def main(args, timer):
-    TESTING_LOCAL = False
+    TESTING_LOCAL = True
+    do_barrier = False
     global_batch_count = 0
     global_batch_max_limit = 50
     global_batch_start_time = time.time()  
@@ -134,11 +159,14 @@ def main(args, timer):
             os.environ["WORLD_SIZE"]
         )  # Total number of GPUs in the cluster
         args.device_id = int(os.environ["LOCAL_RANK"])  # Rank on local node
-    if not dist.is_initialized():
+    if not dist.is_initialized() and torch.cuda.is_available():
         dist.init_process_group("nccl")  # Expects RANK set in environment variable
     args.is_master = rank == 0  # Master node for saving / reporting
-    torch.cuda.set_device(args.device_id)  # Enables calling 'cuda'
+    if torch.cuda.is_available():
+        torch.cuda.set_device(args.device_id)  # Enables calling 'cuda'
     torch.autograd.set_detect_anomaly(True)
+    torch.backends.cudnn.benchmark = True
+    torch.set_float32_matmul_precision("high")
 
     if args.device_id == 0:
         hostname = socket.gethostname()
@@ -148,7 +176,9 @@ def main(args, timer):
 
     if TESTING_LOCAL:
         # Create the /data/ directory if it doesn't exist and define data_path
-        data_path = f"/data/gm"
+        data_path = f"/data/1e404a5c-140b-4e30-af3a-ee453536e9d8/lc0"
+        # data_path = f"/data/lc0"
+        # data_path = f"/data/gm"
         ######################################################################
         # TO DOWNLOAD DATASET
         ######################################################################
@@ -162,6 +192,7 @@ def main(args, timer):
         ######################################################################
     else:
         data_path = f"/data/{args.dataset_id}/gm"
+        # data_path = f"/data/{args.dataset_id}/lc0"
     dataset = EVAL_HDF_Dataset(data_path)
     random_generator = torch.Generator().manual_seed(42)
     train_dataset, test_dataset = random_split(
@@ -171,10 +202,22 @@ def main(args, timer):
         f"Intitialized datasets with {len(train_dataset):,} training and {len(test_dataset):,} test board evaluations."
     )
 
+    model_config = yaml.safe_load(open(args.model_config))
+    if args.device_id == 0:
+        print(f"ModelConfig: {model_config}")
+    model_config["device"] = "cuda"
+    model = Model(**model_config)
+    if torch.cuda.is_available():
+        model = model.to(args.device_id)
+
+    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+    params = sum([torch.prod(torch.tensor(p.size())) for p in model_parameters])
+    timer.report(f"Initialized model with {params:,} params, moved to device")
+
     train_sampler = InterruptableDistributedSampler(train_dataset)
     test_sampler = InterruptableDistributedSampler(test_dataset)
 
-    dataloader_num_workers = 8
+    dataloader_num_workers = 32
     dataloader_prefetch_factor = 4
     dataloader_persistent_workers = True
     if args.stop_after_test_max_limit_train_batches:
@@ -205,20 +248,9 @@ def main(args, timer):
         persistent_workers=dataloader_persistent_workers  # Keep workers alive
     )
     timer.report("Prepared dataloaders")
-
-    model_config = yaml.safe_load(open(args.model_config))
-    if args.device_id == 0:
-        print(f"ModelConfig: {model_config}")
-    model_config["device"] = "cuda"
-    model = Model(**model_config)
-    model = model.to(args.device_id)
-
-    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
-    params = sum([torch.prod(torch.tensor(p.size())) for p in model_parameters])
-    timer.report(f"Initialized model with {params:,} params, moved to device")
-
+    # compile model before ddp/fsdp.
+    model = torch.jit.script(model)
     # Use FSDP if enabled; else fall back to DDP.
-    do_barrier = False
     if args.fsdp_enabled:
         model = FSDP(model)
         timer.report("Using FSDP for distributed training")
@@ -227,7 +259,8 @@ def main(args, timer):
         timer.report("Using DDP for distributed training")
 
     loss_fn = nn.MSELoss(reduction="sum")
-    optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    # optimizer = Lamb(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
     metrics = {
         "train": MetricsTracker(),
         "test": MetricsTracker(),

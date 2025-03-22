@@ -1,13 +1,6 @@
-# nlayers: 4
-# embed_dim: 256
-# inner_dim: 352
-# attention_dim: 224
-# use_1x1conv: True
-# dropout: 0.5
-nlayers: 2
-embed_dim: 64 
-inner_dim: 320
+nlayers: 4
+embed_dim: 64
+inner_dim: 600
 attention_dim: 64
-use_1x1conv: True
-dropout: 0.5
-
+use_1x1conv: False
+dropout: 0.1

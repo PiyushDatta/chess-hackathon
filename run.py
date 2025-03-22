@@ -47,7 +47,7 @@ def fix_checkpoint():
 model_config = yaml.safe_load(open("model_config.yaml"))
 model = Model(**model_config)
 # adjusted checkpoint loading
-fix_checkpoint()
+# fix_checkpoint()
 # checkpoint = torch.load("adjusted_checkpoint.pt", map_location=torch.device('cpu'))
 
 # Your model checkpoint must be called "checkpoint.pt" and must be a dictionary-like object with your model weights

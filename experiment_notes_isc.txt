@@ -1,0 +1,102 @@
+Batch size = 64
+================================================================================
+March2025_try4_chessVision_7_5M_fsdp_amp_flashattn_dataloader 
+Epoch [0] Step [22 / 4,614] Batch [137 / 27,681] Lr: [0.00088], Avg Loss [23.407], Rank Corr.: [15.373%], Batch Time: [0.760 s], Total train time: [38.901 s], Batch count: [38], Avg batch time [1.024 s], Throughput: [8084.9 ex/s]   4,592.439 ms,       115.52 s total
+
+March2025_try4_chessVision_7_5M_fsdp_amp_flashattn_dataloader_NObackends
+Epoch [0] Step [22 / 4,614] Batch [137 / 27,681] Lr: [0.00088], Avg Loss [23.195], Rank Corr.: [10.769%], Batch Time: [0.739 s], Total train time: [38.416 s], Batch count: [38], Avg batch time [1.011 s], Throughput: [8317.9 ex/s]   4,503.807 ms,       115.04 s total
+
+March2025_try4_chessVision_7_5M_fsdp_amp_flashattn_dataloader_NOset_float32_matmul_precision 
+Epoch [0] Step [22 / 4,614] Batch [137 / 27,681] Lr: [0.00088], Avg Loss [22.516], Rank Corr.: [9.396%], Batch Time: [0.771 s], Total train time: [42.293 s], Batch count: [38], Avg batch time [1.113 s], Throughput: [7972.9 ex/s]   4,562.696 ms,       115.94 s total
+================================================================================
+
+Batch size = 64
+================================================================================
+March2025_try4_chessVision_7_5M_fsdp_amp_flashattn_dataloader_64batchsz_32dataloaders 
+Epoch [0] Step [23 / 5,537] Batch [119 / 27,681] Lr: [0.00092], Avg Loss [22.380], Rank Corr.: [14.845%], Batch Time: [0.751 s], Total train time: [47.774 s], Batch count: [45], Avg batch time [1.062 s], Throughput: [6821.3 ex/s]   3,803.254 ms,       110.28 s total
+================================================================================
+
+Batch size = 128
+================================================================================
+March2025_try4_chessVision_7_5M_fsdp_amp_flashattn_dataloader_128batchsz_32dataloaders 
+Epoch [0] Step [1 / 2,769] Batch [9 / 13,841] Lr: [4e-05], Avg Loss [28.533], Rank Corr.: [-4.004%], Batch Time: [3.291 s], Total train time: [47.855 s], Batch count: [10], Avg batch time [4.785 s], Throughput: [3111.3 ex/s]  16,322.243 ms,        48.29 s total
+================================================================================
+
+Batch size = 256
+================================================================================
+March2025_try4_chessVision_7_5M_fsdp_amp_flashattn_dataloader_128batchsz_32dataloaders
+Epoch [0] Step [3 / 2,769] Batch [19 / 13,841] Lr: [0.00012], Avg Loss [28.239], Rank Corr.: [-1.961%], Batch Time: [3.304 s], Total train time: [81.282 s], Batch count: [20], Avg batch time [4.064 s], Throughput: [3099.2 ex/s]  16,473.084 ms,        81.70 s total
+================================================================================
+
+
+================================================================================
+================================================================================
+LARGER MODEL, 46.7M model
+================================================================================
+================================================================================
+March2025_try4_chessVision_7_5M_fsdp_amp_flashattn_dataloader_jit 
+Epoch [0] Step [26 / 5,537] Batch [134 / 27,681] Lr: [0.001], Avg Loss [11.826], Rank Corr.: [23.950%], Batch Time: [0.821 s], Total train time: [68.783 s], Batch count: [60], Avg batch time [1.146 s], Throughput: [6236.6 ex/s]   4,203.767 ms,       140.47 s total
+================================================================================
+March2025_try4_chessVision_7_5M_fsdp_amp_flashattn_dataloader_NOjit 
+Epoch [0] Step [26 / 5,537] Batch [134 / 27,681] Lr: [0.001], Avg Loss [13.695], Rank Corr.: [-0.650%], Batch Time: [0.873 s], Total train time: [68.414 s], Batch count: [60], Avg batch time [1.140 s], Throughput: [5863.5 ex/s]   4,370.890 ms,       140.24 s total
+================================================================================
+
+
+================================================================================
+================================================================================
+MODEL, 20M model
+================================================================================
+================================================================================
+March2025_try5_chessVision_20M_fsdp_amp_flashattn_dataloader_jit 
+Epoch [0] Step [36 / 5,537] Batch [184 / 27,681] Lr: [0.001], Avg Loss [11.637], Rank Corr.: [18.656%], Batch Time: [0.771 s], Total train time: [42.374 s], Batch count: [35], Avg batch time [1.211 s], Throughput: [6640.4 ex/s]   3,886.672 ms,       175.05 s total
+
+================================================================================
+================================================================================
+MODEL, 10.5M model
+================================================================================
+================================================================================
+March2025_try5_chessVision_10_5M_fsdp_amp_flashattn_dataloader_jit
+Epoch [0] Step [43 / 5,537] Batch [219 / 27,681] Lr: [0.001], Avg Loss [11.614], Rank Corr.: [12.388%], Batch Time: [0.731 s], Total train time: [28.822 s], Batch count: [20], Avg batch time [1.441 s], Throughput: [7003.6 ex/s]   3,732.079 ms,       193.80 s total
+
+================================================================================
+================================================================================
+MODEL, 7M model
+================================================================================
+================================================================================
+March2025_try5_chessVision_7M_fsdp_amp_flashattn_dataloader_jit
+Epoch [0] Step [48 / 5,537] Batch [244 / 27,681] Lr: [0.001], Avg Loss [11.562], Rank Corr.: [23.458%], Batch Time: [0.728 s], Total train time: [46.995 s], Batch count: [45], Avg batch time [1.044 s], Throughput: [7036.4 ex/s]   3,675.890 ms,       211.04 s total
+
+================================================================================
+================================================================================
+MODEL, 5M model
+================================================================================
+================================================================================
+March2025_try5_chessVision_5M_fsdp_amp_flashattn_dataloader_jit 
+Epoch [0] Step [43 / 5,537] Batch [219 / 27,681] Lr: [0.001], Avg Loss [11.261], Rank Corr.: [21.926%], Batch Time: [0.722 s], Total train time: [47.281 s], Batch count: [45], Avg batch time [1.051 s], Throughput: [7092.3 ex/s]   3,698.332 ms,       192.14 s total
+
+================================================================================
+================================================================================
+MODEL, 3M model
+================================================================================
+================================================================================
+March2025_try5_chessVision_3M_fsdp_amp_flashattn_dataloader_jit
+Epoch [0] Step [39 / 5,537] Batch [199 / 27,681] Lr: [0.001], Avg Loss [18.192], Rank Corr.: [31.440%], Batch Time: [0.738 s], Total train time: [88.020 s], Batch count: [100], Avg batch time [0.880 s], Throughput: [6938.4 ex/s]   3,728.845 ms,       170.83 s total
+
+================================================================================
+================================================================================
+MODEL, 1M model
+================================================================================
+================================================================================
+March2025_try5_chessVision_1M_fsdp_amp_flashattn_dataloader_jit
+Epoch [0] Step [40 / 5,537] Batch [204 / 27,681] Lr: [0.001], Avg Loss [21.656], Rank Corr.: [-9.311%], Batch Time: [0.772 s], Total train time: [17.170 s], Batch count: [5], Avg batch time [3.434 s], Throughput: [6634.8 ex/s]  10,587.437 ms,       176.01 s total
+
+
+================================================================================
+================================================================================
+MODEL, 3.160M model
+================================================================================
+================================================================================
+March2025_try6_chessVision_3M_fsdp_amp_flashattn_dataloader_jit
+Epoch [0] Step [40 / 5,537] Batch [204 / 27,681] Lr: [0.001], Avg Loss [10.748], Rank Corr.: [27.657%], Batch Time: [0.810 s], Total train time: [16.891 s], Batch count: [5], Avg batch time [3.378 s], Throughput: [6324.4 ex/s]  10,202.907 ms,       181.07 s total
+================================================================================
+March2025_try7_chessVision_3M_main_diff_attn_adamw

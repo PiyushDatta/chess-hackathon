@@ -14,6 +14,10 @@
 
 `python train.py`
 
+## ISC Training
+
+`isc train model.isc`
+
 ## To see tensorboard
 
 `tensorboard --logdir=training_output`
@@ -224,11 +228,17 @@ timestamp, name, utilization.gpu [%], utilization.memory [%], memory.total [MiB]
     -   Using FSDP instead of DDP
     -   Model configs changed:
         - Make larger, from 1M to 12.8M params (12,798,081)
-            nlayers: 4
-            embed_dim: 256
-            inner_dim: 352
-            attention_dim: 224
-    -   Use flash attention
+            nlayers: 4            # increased from 2
+            embed_dim: 128        # increased from 64
+            inner_dim: 640        # increased from 320
+            attention_dim: 128    # increased from 64
+            use_1x1conv: True
+            dropout: 0.5    -   Use flash attention
+    -   Use dataloader_num_workers = 12, from 8
+    -   Use torch.backends.cudnn.benchmark = True, helps PyTorch pick the best convolution algorithms for input sizes, which speeds up training when the input dimensions don’t change much
+    -   Use torch.set_float32_matmul_precision("high") can improve numerical precision during float32 matrix multiplications, which might benefit the stability of the training
+    -   Actually use flash attention this time
+    -   Change warm up steps to 25
     -   Batch throughput:  84-88 (examples seen)
     -   Training loss at 27-28 at 100 steps
     -   Train loss/rank corr at -2.93 at 100 steps
@@ -443,4 +453,14 @@ for idx in range(10):
     print(f"Sample {idx}:")
     print(board)
     print(score)
+```
+
+### To submit:
+
+```
+cp checkpoint.pt /shared/rat_exterminator/.
+cp chess_gameplay.py /shared/rat_exterminator/.
+cp model.py /shared/rat_exterminator/.
+cp model_config.yaml /shared/rat_exterminator/.
+cp pre_submission_val.py /shared/rat_exterminator/.
 ```

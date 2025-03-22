@@ -28,51 +28,64 @@ class Attention(nn.Module):
     n_heads: 1
     activation: softmax (default), tanh
     '''
-    def __init__(self, input_dims, attention_dims, n_heads=2, use_flash_attn=False):
+    def __init__(self, embed_dim, num_heads=2, dropout=0.1):
         super().__init__()
-        self.attention_dims = attention_dims
-        self.n_heads = n_heads
-        self.use_flash_attn = use_flash_attn and hasattr(F, 'scaled_dot_product_attention')
-        self.k1 = nn.Linear(input_dims, attention_dims)
-        self.v1 = nn.Linear(input_dims, attention_dims)
-        self.q1 = nn.Linear(input_dims, attention_dims)
+        self.mha = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
+        self.norm = nn.LayerNorm(embed_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        orig_shape = x.shape  # (B,C,H,W)
+        x = x.permute(0,2,3,1).flatten(1,2)  # (B,H*W,C)
+        attn_out, _ = self.mha(x, x, x)
+        x = x + self.dropout(attn_out)
+        x = self.norm(x)
+        return x.view(orig_shape).permute(0,3,1,2)  # restore original shape
+    # def __init__(self, input_dims, attention_dims, n_heads=2, use_flash_attn=True):
+    #     super().__init__()
+    #     self.attention_dims = attention_dims
+    #     self.n_heads = n_heads
+    #     self.use_flash_attn = use_flash_attn and hasattr(F, 'scaled_dot_product_attention')
+    #     self.k1 = nn.Linear(input_dims, attention_dims)
+    #     self.v1 = nn.Linear(input_dims, attention_dims)
+    #     self.q1 = nn.Linear(input_dims, attention_dims)
         
-        if n_heads == 2:
-            self.k2 = nn.Linear(input_dims, attention_dims)
-            self.v2 = nn.Linear(input_dims, attention_dims)
-            self.q2 = nn.Linear(input_dims, attention_dims)
-            self.attention_head_projection = nn.Linear(attention_dims * 2,input_dims)
-        else:
-            self.attention_head_projection = nn.Linear(attention_dims,input_dims)
+    #     if n_heads == 2:
+    #         self.k2 = nn.Linear(input_dims, attention_dims)
+    #         self.v2 = nn.Linear(input_dims, attention_dims)
+    #         self.q2 = nn.Linear(input_dims, attention_dims)
+    #         self.attention_head_projection = nn.Linear(attention_dims * 2,input_dims)
+    #     else:
+    #         self.attention_head_projection = nn.Linear(attention_dims,input_dims)
 
-        self.activation = nn.Softmax(dim = -1)
+    #     self.activation = nn.Softmax(dim = -1)
         
-    def forward(self,x):
-        '''
-        x: shape (B,D,k1,k2) where B is the Batch size, D is number of filters, and k1, k2 are the kernel sizes
-        '''
-        oB, oD, oW, oH = x.shape
-        x = x.permute(0, 2, 3, 1)
-        x = x.view(oB, -1, oD)
+    # def forward(self,x):
+    #     '''
+    #     x: shape (B,D,k1,k2) where B is the Batch size, D is number of filters, and k1, k2 are the kernel sizes
+    #     '''
+    #     oB, oD, oW, oH = x.shape
+    #     x = x.permute(0, 2, 3, 1)
+    #     x = x.view(oB, -1, oD)
 
-        q1,v1,k1    = self.q1(x),self.v1(x),self.k1(x)
-        if self.use_flash_attn:
-            multihead = F.scaled_dot_product_attention(q1, k1, v1)
-        else:
-            qk1 = (q1 @ k1.permute(0, 2, 1)) / (self.attention_dims ** 0.5)
-            multihead = self.activation(qk1) @ v1
+    #     q1,v1,k1    = self.q1(x),self.v1(x),self.k1(x)
+    #     if self.use_flash_attn:
+    #         multihead = F.scaled_dot_product_attention(q1, k1, v1)
+    #     else:
+    #         qk1 = (q1 @ k1.permute(0, 2, 1)) / (self.attention_dims ** 0.5)
+    #         multihead = self.activation(qk1) @ v1
 
-        if self.n_heads == 2:
-            q2,v2,k2    = self.q2(x),self.v2(x),self.k2(x)
-            if self.use_flash_attn:
-                attention = F.scaled_dot_product_attention(q2, k2, v2)
-            else:
-                qk2 = (q2 @ k2.permute(0, 2, 1)) / (self.attention_dims ** 0.5)
-                attention = self.activation(qk2) @ v2
-            multihead = torch.cat((multihead, attention),dim=-1)
+    #     if self.n_heads == 2:
+    #         q2,v2,k2    = self.q2(x),self.v2(x),self.k2(x)
+    #         if self.use_flash_attn:
+    #             attention = F.scaled_dot_product_attention(q2, k2, v2)
+    #         else:
+    #             qk2 = (q2 @ k2.permute(0, 2, 1)) / (self.attention_dims ** 0.5)
+    #             attention = self.activation(qk2) @ v2
+    #         multihead = torch.cat((multihead, attention),dim=-1)
    
-        multihead_concat = self.attention_head_projection(multihead)     # shape: (B, 64, 64)
-        return multihead_concat.reshape(oB, oD, oW, oH)
+    #     multihead_concat = self.attention_head_projection(multihead)     # shape: (B, 64, 64)
+    #     return multihead_concat.reshape(oB, oD, oW, oH)
 
 class Residual(nn.Module):
     """
@@ -93,7 +106,7 @@ class Residual(nn.Module):
     def forward(self, X):
         Y = F.relu(self.bn1(self.conv1(X)))
         Y = self.dropout(self.bn2(self.conv2(Y)))
-        if self.conv3:
+        if self.conv3 is not None:
             X = self.conv3(X)
         Y += X
         return F.relu(Y)

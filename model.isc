@@ -1,5 +1,5 @@
 isc_project_id = "230b65eb-0b85-475c-a4ae-c372443ddac8"
-experiment_name = "March2025_chessVision_try1_1M_fsdp_amp_flashattn_dataloader"
+experiment_name = "March2025_try7_chessVision_3M_main_diff_attn_adamw"
 #burst_shape_priority_list = ["gcp-asia-southeast1-h100-8x-spot", "gcp-us-central-h100-8x-spot","gcp-us-central1-h100-80g-x1-spot","gcp-us-central1-a100-80g-x1-spot", "aws-euwest1-a10g-spot", "gcp-asia-southeast1-l4-spot", "aws-useast2-l4-spot"]
 #input_artifact_id_list = ["261fc020-3b24-498e-a10d-da1f9ee11db8"]
 dataset_id_list = ["1e404a5c-140b-4e30-af3a-ee453536e9d8"]
