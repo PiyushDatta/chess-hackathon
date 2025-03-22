@@ -99,4 +99,23 @@ MODEL, 3.160M model
 March2025_try6_chessVision_3M_fsdp_amp_flashattn_dataloader_jit
 Epoch [0] Step [40 / 5,537] Batch [204 / 27,681] Lr: [0.001], Avg Loss [10.748], Rank Corr.: [27.657%], Batch Time: [0.810 s], Total train time: [16.891 s], Batch count: [5], Avg batch time [3.378 s], Throughput: [6324.4 ex/s]  10,202.907 ms,       181.07 s total
 ================================================================================
-March2025_try7_chessVision_3M_main_diff_attn_adamw
+March2025_try7_chessVision_3M_main_adamw_diff_attn_resid_gelu
+Epoch [0] Step [40 / 5,537] Batch [204 / 27,681] Lr: [0.001], Avg Loss [10.280], Rank Corr.: [41.933%], Batch Time: [0.800 s], Total train time: [20.208 s], Batch count: [5], Avg batch time [4.042 s], Throughput: [6400.4 ex/s]   9,724.404 ms,       173.28 s total
+
+================================================================================
+================================================================================
+BURST - 3.1M Model
+================================================================================
+================================================================================
+March2025_bursttry8_chessVision_3M_main_adamw_diff_attn_resid_gelu
+================================================================================
+Hostname: host-629ee8a2-0
+TrainConfig: Namespace(model_config=PosixPath('/root/chess-hackathon/model_config.yaml'), load_path=PosixPath('/root/chess-hackathon/recover/checkpoint.pt'), bs=64, lr=0.001, wd=0.01, ws=25, grad_accum=5, save_steps=25, dataset_id='1e404a5c-140b-4e30-af3a-ee453536e9d8', stop_after_test_max_limit_train_batches=False, amp_enabled=True, fsdp_enabled=False, world_size=48, device_id=0, is_master=True)
+[ 2025-03-22 11:42:30 ] Setup for distributed training                                           4,084.055 ms,         4.26 s total
+[ 2025-03-22 11:42:32 ] Intitialized datasets with 28,345,135 training and 7,086,283 test board evaluations.   1,950.017 ms,         6.21 s total
+ModelConfig: {'nlayers': 4, 'embed_dim': 64, 'inner_dim': 600, 'attention_dim': 64, 'use_1x1conv': False, 'dropout': 0.1}
+[ 2025-03-22 11:42:33 ] Initialized model with 3,102,945 params, moved to device                   454.193 ms,         6.67 s total
+Loading dataloaders with 32 workers
+Epoch [0] Step [166 / 1,846] Batch [834 / 9,227] Lr: [0.001], Avg Loss [7.167], Rank Corr.: [69.837%], Batch Time: [0.760 s], Total train time: [693.791 s], Batch count: [835], Avg batch time [0.831 s], Throughput: [20218.7 ex/s]   3,987.213 ms,       694.12 s total
+
+30 minutes = ~70.00 (exact USD$69.43)

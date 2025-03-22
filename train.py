@@ -124,17 +124,18 @@ def main(args, timer):
         args.model_config = os.path.join(current_path, "model_config.yaml")
         os.environ["LOSSY_ARTIFACT_PATH"] = training_output_path
         os.environ["CHECKPOINT_ARTIFACT_PATH"] = training_output_path
-        print("CUDA available:", torch.cuda.is_available())
-        if torch.cuda.is_available():
-            print("Number of GPUs:", torch.cuda.device_count())
-            print("Current device:", torch.cuda.current_device())
-            print("Device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
     else:
         rank = int(os.environ["RANK"])  # Rank of this GPU in cluster
         args.world_size = int(
             os.environ["WORLD_SIZE"]
         )  # Total number of GPUs in the cluster
         args.device_id = int(os.environ["LOCAL_RANK"])  # Rank on local node
+        print("CUDA available:", torch.cuda.is_available())
+        if torch.cuda.is_available():
+            print("Number of GPUs:", torch.cuda.device_count())
+            print("Current device:", torch.cuda.current_device())
+            print("Device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
+
     if not dist.is_initialized() and torch.cuda.is_available():
         dist.init_process_group("nccl")  # Expects RANK set in environment variable
     args.is_master = rank == 0  # Master node for saving / reporting
@@ -152,9 +153,9 @@ def main(args, timer):
 
     if TESTING_LOCAL:
         # Create the /data/ directory if it doesn't exist and define data_path
-        # data_path = f"/data/1e404a5c-140b-4e30-af3a-ee453536e9d8/lc0"
+        data_path = f"/data/1e404a5c-140b-4e30-af3a-ee453536e9d8/lc0"
         # data_path = f"/data/lc0"
-        data_path = f"/data/gm"
+        # data_path = f"/data/gm"
         ######################################################################
         # TO DOWNLOAD DATASET
         ######################################################################

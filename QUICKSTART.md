@@ -227,40 +227,29 @@ timestamp, name, utilization.gpu [%], utilization.memory [%], memory.total [MiB]
     -   AMP with grad scalar enabled (backward pass mixed precision), but with autocast disabled (forward pass with FP32)
     -   Using FSDP instead of DDP
     -   Model configs changed:
-        - Make larger, from 1M to 12.8M params (12,798,081)
-            nlayers: 4            # increased from 2
-            embed_dim: 128        # increased from 64
-            inner_dim: 640        # increased from 320
-            attention_dim: 128    # increased from 64
-            use_1x1conv: True
-            dropout: 0.5    -   Use flash attention
-    -   Use dataloader_num_workers = 12, from 8
+        - Found ideal params, 3M (3.1M to be exact)
+            nlayers: 4
+            embed_dim: 64
+            inner_dim: 600
+            attention_dim: 64
+            use_1x1conv: False
+            dropout: 0.1
+    - dataloader_num_workers = 32
+    - dataloader_prefetch_factor = 4
+    - dataloader_persistent_workers = True
     -   Use torch.backends.cudnn.benchmark = True, helps PyTorch pick the best convolution algorithms for input sizes, which speeds up training when the input dimensions don’t change much
     -   Use torch.set_float32_matmul_precision("high") can improve numerical precision during float32 matrix multiplications, which might benefit the stability of the training
     -   Actually use flash attention this time
     -   Change attention module to be more efficient
     -   Change residual module to be more efficient
+    -   Use gelu for residual instead of relu
     -   Change warm up steps to 25
     -   Batch throughput:  84-88 (examples seen)
     -   Training loss at 27-28 at 100 steps
     -   Train loss/rank corr at -2.93 at 100 steps
 
 ```
-Epoch [0] Step [21 / 147,631] Batch [131 / 885,786] Lr: [2.1e-05], Avg Loss [27.309], Rank Corr.: [0.509%], Batch Time: [3.963 s], Total train time: [548.317 s], Batch count: [132], Avg batch time [4.154 s], Throughput: [48.5 ex/s]  23,947.377 ms,       552.39 s total
-```
-
-```
-2025/03/21 17:25:32.797, NVIDIA GeForce RTX 3090, 24 %, 5 %, 24576 MiB, 22303 MiB, 2024 MiB, 34, 36.13 W
-2025/03/21 17:25:33.812, NVIDIA GeForce RTX 3090, 5 %, 3 %, 24576 MiB, 22302 MiB, 2025 MiB, 34, 36.76 W
-2025/03/21 17:25:34.820, NVIDIA GeForce RTX 3090, 8 %, 4 %, 24576 MiB, 22304 MiB, 2023 MiB, 34, 32.89 W
-2025/03/21 17:25:35.835, NVIDIA GeForce RTX 3090, 8 %, 4 %, 24576 MiB, 22304 MiB, 2023 MiB, 34, 33.40 W
-2025/03/21 17:25:36.844, NVIDIA GeForce RTX 3090, 61 %, 28 %, 24576 MiB, 22299 MiB, 2028 MiB, 34, 35.66 W
-2025/03/21 17:25:37.853, NVIDIA GeForce RTX 3090, 36 %, 26 %, 24576 MiB, 22294 MiB, 2033 MiB, 34, 38.44 W
-2025/03/21 17:25:38.861, NVIDIA GeForce RTX 3090, 5 %, 3 %, 24576 MiB, 22295 MiB, 2032 MiB, 34, 32.76 W
-2025/03/21 17:25:39.870, NVIDIA GeForce RTX 3090, 6 %, 3 %, 24576 MiB, 22294 MiB, 2033 MiB, 34, 32.29 W
-2025/03/21 17:25:40.879, NVIDIA GeForce RTX 3090, 53 %, 22 %, 24576 MiB, 22298 MiB, 2029 MiB, 34, 34.98 W
-2025/03/21 17:25:41.890, NVIDIA GeForce RTX 3090, 17 %, 2 %, 24576 MiB, 22303 MiB, 2024 MiB, 34, 39.00 W
-2025/03/21 17:25:42.898, NVIDIA GeForce RTX 3090, 6 %, 4 %, 24576 MiB, 22308 MiB, 2019 MiB, 34, 33.97
+Epoch [0] Step [40 / 5,537] Batch [204 / 27,681] Lr: [0.001], Avg Loss [10.280], Rank Corr.: [41.933%], Batch Time: [0.800 s], Total train time: [20.208 s], Batch count: [5], Avg batch time [4.042 s], Throughput: [6400.4 ex/s]   9,724.404 ms,       173.28 s total
 ```
 
 ## Notes
