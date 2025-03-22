@@ -1,4 +1,5 @@
 import io
+import math
 import torch
 import torch.nn as nn
 import numpy as np
@@ -21,71 +22,75 @@ def encode_board(board: Board) -> np.array:
     return np.array([PIECE_CHARS[::step].index(c) for c in unicode], dtype=int).reshape(8,8)
 
 class Attention(nn.Module):
-    '''
-    Implements a temporal attention block with a provision to increase the number of
-    heads to two
-
-    n_heads: 1
-    activation: softmax (default), tanh
-    '''
-    def __init__(self, embed_dim, num_heads=2, dropout=0.1):
+    def __init__(self, input_dims, attention_dims, n_heads=2, use_flash_attn=True, dropout=0.1):
         super().__init__()
-        self.mha = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
-        self.norm = nn.LayerNorm(embed_dim)
+        assert attention_dims % n_heads == 0, "attention_dims must be divisible by n_heads"
+        self.attention_dims = attention_dims
+        self.n_heads = n_heads
+        self.head_dim = attention_dims // n_heads
+        # Check if Flash Attention is available
+        self.use_flash_attn = use_flash_attn and hasattr(F, 'scaled_dot_product_attention')
+        # Combined QKV projection for efficiency (reduces parameter count and computation)
+        self.qkv_proj = nn.Linear(input_dims, 3 * attention_dims)
+        # Combined QKV projection for efficiency (reduces parameter count and computation)
+        self.qkv_proj = nn.Linear(input_dims, 3 * attention_dims)
+        # Output projection
+        self.o_proj = nn.Linear(attention_dims, input_dims)
+        # Normalization and regularization
+        self.norm = nn.LayerNorm(input_dims)
         self.dropout = nn.Dropout(dropout)
+        # Initialize parameters properly for stable training
+        self._reset_parameters()
 
-    def forward(self, x):
-        orig_shape = x.shape  # (B,C,H,W)
-        x = x.permute(0,2,3,1).flatten(1,2)  # (B,H*W,C)
-        attn_out, _ = self.mha(x, x, x)
-        x = x + self.dropout(attn_out)
-        x = self.norm(x)
-        return x.view(orig_shape).permute(0,3,1,2)  # restore original shape
-    # def __init__(self, input_dims, attention_dims, n_heads=2, use_flash_attn=True):
-    #     super().__init__()
-    #     self.attention_dims = attention_dims
-    #     self.n_heads = n_heads
-    #     self.use_flash_attn = use_flash_attn and hasattr(F, 'scaled_dot_product_attention')
-    #     self.k1 = nn.Linear(input_dims, attention_dims)
-    #     self.v1 = nn.Linear(input_dims, attention_dims)
-    #     self.q1 = nn.Linear(input_dims, attention_dims)
-        
-    #     if n_heads == 2:
-    #         self.k2 = nn.Linear(input_dims, attention_dims)
-    #         self.v2 = nn.Linear(input_dims, attention_dims)
-    #         self.q2 = nn.Linear(input_dims, attention_dims)
-    #         self.attention_head_projection = nn.Linear(attention_dims * 2,input_dims)
-    #     else:
-    #         self.attention_head_projection = nn.Linear(attention_dims,input_dims)
-
-    #     self.activation = nn.Softmax(dim = -1)
-        
-    # def forward(self,x):
-    #     '''
-    #     x: shape (B,D,k1,k2) where B is the Batch size, D is number of filters, and k1, k2 are the kernel sizes
-    #     '''
-    #     oB, oD, oW, oH = x.shape
-    #     x = x.permute(0, 2, 3, 1)
-    #     x = x.view(oB, -1, oD)
-
-    #     q1,v1,k1    = self.q1(x),self.v1(x),self.k1(x)
-    #     if self.use_flash_attn:
-    #         multihead = F.scaled_dot_product_attention(q1, k1, v1)
-    #     else:
-    #         qk1 = (q1 @ k1.permute(0, 2, 1)) / (self.attention_dims ** 0.5)
-    #         multihead = self.activation(qk1) @ v1
-
-    #     if self.n_heads == 2:
-    #         q2,v2,k2    = self.q2(x),self.v2(x),self.k2(x)
-    #         if self.use_flash_attn:
-    #             attention = F.scaled_dot_product_attention(q2, k2, v2)
-    #         else:
-    #             qk2 = (q2 @ k2.permute(0, 2, 1)) / (self.attention_dims ** 0.5)
-    #             attention = self.activation(qk2) @ v2
-    #         multihead = torch.cat((multihead, attention),dim=-1)
-   
-    #     multihead_concat = self.attention_head_projection(multihead)     # shape: (B, 64, 64)
-    #     return multihead_concat.reshape(oB, oD, oW, oH)
+    def _reset_parameters(self):
+        # Xavier uniform initialization for stable gradient flow
+        nn.init.xavier_uniform_(self.qkv_proj.weight)
+        self.qkv_proj.bias.data.fill_(0)
+        nn.init.xavier_uniform_(self.o_proj.weight)
+        self.o_proj.bias.data.fill_(0)
+ 
+    def forward(self,x):
+        '''
+        x: shape (B,D,k1,k2) where B is the Batch size, D is number of filters, and k1, k2 are the kernel sizes
+        '''
+        # Save original dimensions for reshaping later
+        oB, oD, oW, oH = x.shape
+        seq_len = oW * oH
+        # Reshape to sequence form: (B, D, k1, k2) -> (B, k1*k2, D)
+        x_reshaped = x.permute(0, 2, 3, 1).reshape(oB, seq_len, oD)
+        # Store residual for skip connection
+        residual = x_reshaped
+        # Apply layer normalization (pre-norm architecture)
+        x_norm = self.norm(x_reshaped)
+        # Project to queries, keys, values all at once (more efficient)
+        qkv = self.qkv_proj(x_norm)
+        qkv = qkv.reshape(oB, seq_len, 3, self.n_heads, self.head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, B, n_heads, seq_len, head_dim)
+        q, k, v = qkv[0], qkv[1], qkv[2]  # Separate Q, K, V
+        # Apply attention mechanism
+        if self.use_flash_attn:
+            # Use Flash Attention via PyTorch's optimized implementation
+            attn_output = F.scaled_dot_product_attention(
+                q, k, v, dropout_p=self.dropout.p if self.training else 0.0
+            )
+        else:
+            # Calculate attention scores
+            scale = 1.0 / math.sqrt(self.head_dim)
+            attn = torch.matmul(q, k.transpose(-2, -1)) * scale
+            attn = F.softmax(attn, dim=-1)
+            attn = self.dropout(attn) if self.training else attn
+            attn_output = torch.matmul(attn, v)
+        # Reshape attention output back to sequence format
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.reshape(oB, seq_len, self.attention_dims)
+        # Project back to input dimension
+        output = self.o_proj(attn_output)
+        output = self.dropout(output)
+        # Add residual connection
+        output = output + residual
+        # Reshape back to original spatial dimensions: (B, seq_len, D) -> (B, D, k1, k2)
+        output = output.reshape(oB, oW, oH, oD).permute(0, 3, 1, 2)
+        return output
 
 class Residual(nn.Module):
     """
@@ -102,14 +107,31 @@ class Residual(nn.Module):
         self.bn1 = nn.BatchNorm2d(inner_channels)
         self.bn2 = nn.BatchNorm2d(outer_channels)
         self.dropout = nn.Dropout(p=dropout)
+        # GELU activation
+        self.gelu = nn.GELU()
+        # Initialize parameters using Kaiming normal
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                # Use 'relu' for initialization, then scale for GELU
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                m.weight.data *= 1.0 / 0.7978845608028654  # Scaling factor for GELU
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, X):
-        Y = F.relu(self.bn1(self.conv1(X)))
+        Y = self.gelu(self.bn1(self.conv1(X)))
         Y = self.dropout(self.bn2(self.conv2(Y)))
+        # 1x1 convolution if needed (using memory-efficient implementation)
         if self.conv3 is not None:
             X = self.conv3(X)
         Y += X
-        return F.relu(Y)
+        return F.gelu(Y)
 
 class Model(nn.Module):
     """

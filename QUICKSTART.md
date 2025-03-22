@@ -238,6 +238,8 @@ timestamp, name, utilization.gpu [%], utilization.memory [%], memory.total [MiB]
     -   Use torch.backends.cudnn.benchmark = True, helps PyTorch pick the best convolution algorithms for input sizes, which speeds up training when the input dimensions don’t change much
     -   Use torch.set_float32_matmul_precision("high") can improve numerical precision during float32 matrix multiplications, which might benefit the stability of the training
     -   Actually use flash attention this time
+    -   Change attention module to be more efficient
+    -   Change residual module to be more efficient
     -   Change warm up steps to 25
     -   Batch throughput:  84-88 (examples seen)
     -   Training loss at 27-28 at 100 steps

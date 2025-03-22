@@ -33,30 +33,6 @@ from model import Model
 
 timer.report("Completed imports")
 
-class InterruptableCPUSampler(Sampler):
-    def __init__(self, dataset, shuffle=True, seed=42):
-        self.dataset = dataset
-        self.shuffle = shuffle
-        self.seed = seed
-        self.epoch = 0
-        self.indices = None
-
-    def __iter__(self):
-        if self.shuffle:
-            # Shuffle indices based on epoch and seed
-            rng = np.random.RandomState(self.seed + self.epoch)
-            self.indices = rng.permutation(len(self.dataset))
-        else:
-            self.indices = np.arange(len(self.dataset))
-
-        return iter(self.indices)
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def set_epoch(self, epoch):
-        self.epoch = epoch
-
 def get_args_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -126,7 +102,7 @@ def spearmans_rho(a, b):
 
 
 def main(args, timer):
-    TESTING_LOCAL = True
+    TESTING_LOCAL = False
     do_barrier = False
     global_batch_count = 0
     global_batch_max_limit = 50
@@ -176,9 +152,9 @@ def main(args, timer):
 
     if TESTING_LOCAL:
         # Create the /data/ directory if it doesn't exist and define data_path
-        data_path = f"/data/1e404a5c-140b-4e30-af3a-ee453536e9d8/lc0"
+        # data_path = f"/data/1e404a5c-140b-4e30-af3a-ee453536e9d8/lc0"
         # data_path = f"/data/lc0"
-        # data_path = f"/data/gm"
+        data_path = f"/data/gm"
         ######################################################################
         # TO DOWNLOAD DATASET
         ######################################################################
