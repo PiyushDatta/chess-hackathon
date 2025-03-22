@@ -18,7 +18,6 @@ import socket
 import yaml
 import time
 import math
-from huggingface_hub import snapshot_download, login
 
 from cycling_utils import (
     InterruptableDistributedSampler,
@@ -58,7 +57,7 @@ def get_args_parser():
         "--grad-accum", help="gradient accumulation steps", type=int, default=6
     )
     parser.add_argument(
-        "--save-steps", help="saving interval steps", type=int, default=50
+        "--save-steps", help="saving interval steps", type=int, default=25
     )
     parser.add_argument(
         "--dataset-id", help="Dataset ID for the dataset", type=str, default=''
@@ -103,7 +102,7 @@ def spearmans_rho(a, b):
 
 
 def main(args, timer):
-    TESTING_LOCAL = True
+    TESTING_LOCAL = False
     global_batch_count = 0
     global_batch_max_limit = 50
     global_batch_start_time = time.time()  
@@ -125,9 +124,10 @@ def main(args, timer):
         os.environ["LOSSY_ARTIFACT_PATH"] = training_output_path
         os.environ["CHECKPOINT_ARTIFACT_PATH"] = training_output_path
         print("CUDA available:", torch.cuda.is_available())
-        print("Number of GPUs:", torch.cuda.device_count())
-        print("Current device:", torch.cuda.current_device())
-        print("Device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
+        if torch.cuda.is_available():
+            print("Number of GPUs:", torch.cuda.device_count())
+            print("Current device:", torch.cuda.current_device())
+            print("Device name:", torch.cuda.get_device_name(torch.cuda.current_device()))
     else:
         rank = int(os.environ["RANK"])  # Rank of this GPU in cluster
         args.world_size = int(
@@ -152,6 +152,7 @@ def main(args, timer):
         ######################################################################
         # TO DOWNLOAD DATASET
         ######################################################################
+        # from huggingface_hub import snapshot_download, login
         # os.makedirs(data_path, exist_ok=True)
         # Specify the repository id from Hugging Face Hub
         # repo_id = "<REPO_ID>"
@@ -160,7 +161,7 @@ def main(args, timer):
         # snapshot_download(repo_id=repo_id, local_dir=data_path)
         ######################################################################
     else:
-        data_path = f"/data/{args.dataset_id}"
+        data_path = f"/data/{args.dataset_id}/gm"
     dataset = EVAL_HDF_Dataset(data_path)
     random_generator = torch.Generator().manual_seed(42)
     train_dataset, test_dataset = random_split(
