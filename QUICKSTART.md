@@ -449,9 +449,11 @@ for idx in range(10):
 ### To submit:
 
 ```
+ls -lrt /shared/rat_exterminator/
 cp checkpoint.pt /shared/rat_exterminator/.
 cp chess_gameplay.py /shared/rat_exterminator/.
 cp model.py /shared/rat_exterminator/.
 cp model_config.yaml /shared/rat_exterminator/.
 cp pre_submission_val.py /shared/rat_exterminator/.
+ls -lrt /shared/rat_exterminator/
 ```

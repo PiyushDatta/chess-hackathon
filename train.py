@@ -168,8 +168,9 @@ def main(args, timer):
         # snapshot_download(repo_id=repo_id, local_dir=data_path)
         ######################################################################
     else:
-        data_path = f"/data/{args.dataset_id}/gm"
-        # data_path = f"/data/{args.dataset_id}/lc0"
+        # data_path = f"/data/{args.dataset_id}/gm"
+        data_path = f"/data/{args.dataset_id}/lc0"
+    print(f"Data path is {data_path}")
     dataset = EVAL_HDF_Dataset(data_path)
     random_generator = torch.Generator().manual_seed(42)
     train_dataset, test_dataset = random_split(
@@ -272,10 +273,35 @@ def main(args, timer):
         else:
             model.module.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
-        train_dataloader.sampler.load_state_dict(checkpoint["train_sampler"])
-        test_dataloader.sampler.load_state_dict(checkpoint["test_sampler"])
-        metrics = checkpoint["metrics"]
-        timer = checkpoint["timer"]
+        try:
+            train_dataloader.sampler.load_state_dict(checkpoint["train_sampler"])
+            test_dataloader.sampler.load_state_dict(checkpoint["test_sampler"])
+            metrics = checkpoint["metrics"]
+            timer = checkpoint["timer"]
+        except Exception as e:
+            print("An error occurred while loading checkpoint data for dataloaders and stuff, moving on...error:\n", e)
+            train_sampler = InterruptableDistributedSampler(train_dataset)
+            test_sampler = InterruptableDistributedSampler(test_dataset)
+            train_dataloader = DataLoader(
+                train_dataset, 
+                batch_size=args.bs, 
+                sampler=train_sampler,
+                num_workers=dataloader_num_workers,  # Add workers for data loading
+                pin_memory=True,  # Speed up GPU transfers
+                prefetch_factor=dataloader_prefetch_factor,  # Add prefetching
+                persistent_workers=dataloader_persistent_workers  # Keep workers alive
+            )
+            test_dataloader = DataLoader(
+                test_dataset, 
+                batch_size=args.bs, 
+                sampler=test_sampler,
+                num_workers=dataloader_num_workers,
+                pin_memory=True,  # Speed up GPU transfers
+                prefetch_factor=dataloader_prefetch_factor,  # Add prefetching
+                persistent_workers=dataloader_persistent_workers  # Keep workers alive
+            )
+            print("Loaded dataloaders again!")
+
         timer.start_time = time.time()
         if "scaler" in checkpoint:
             scaler.load_state_dict(checkpoint["scaler"])
@@ -296,6 +322,7 @@ def main(args, timer):
 
         timer.report(f"Training epoch {epoch}")
         train_batches_per_epoch = len(train_dataloader)
+        timer.report(f"len(train_dataloader): {train_batches_per_epoch}")
         train_steps_per_epoch = math.ceil(train_batches_per_epoch / args.grad_accum)
         optimizer.zero_grad()
         model.train()

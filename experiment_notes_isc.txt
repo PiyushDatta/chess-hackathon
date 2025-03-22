@@ -107,7 +107,7 @@ Epoch [0] Step [40 / 5,537] Batch [204 / 27,681] Lr: [0.001], Avg Loss [10.280],
 BURST - 3.1M Model
 ================================================================================
 ================================================================================
-March2025_bursttry8_chessVision_3M_main_adamw_diff_attn_resid_gelu
+March2025_bursttry8_chessVision_3M_main_adamw_diff_attn_resid_gelu - gm
 ================================================================================
 Hostname: host-629ee8a2-0
 TrainConfig: Namespace(model_config=PosixPath('/root/chess-hackathon/model_config.yaml'), load_path=PosixPath('/root/chess-hackathon/recover/checkpoint.pt'), bs=64, lr=0.001, wd=0.01, ws=25, grad_accum=5, save_steps=25, dataset_id='1e404a5c-140b-4e30-af3a-ee453536e9d8', stop_after_test_max_limit_train_batches=False, amp_enabled=True, fsdp_enabled=False, world_size=48, device_id=0, is_master=True)
@@ -117,5 +117,26 @@ ModelConfig: {'nlayers': 4, 'embed_dim': 64, 'inner_dim': 600, 'attention_dim': 
 [ 2025-03-22 11:42:33 ] Initialized model with 3,102,945 params, moved to device                   454.193 ms,         6.67 s total
 Loading dataloaders with 32 workers
 Epoch [0] Step [166 / 1,846] Batch [834 / 9,227] Lr: [0.001], Avg Loss [7.167], Rank Corr.: [69.837%], Batch Time: [0.760 s], Total train time: [693.791 s], Batch count: [835], Avg batch time [0.831 s], Throughput: [20218.7 ex/s]   3,987.213 ms,       694.12 s total
-
+Epoch [0] Step [1,537 / 1,846] Batch [7,689 / 9,227] Lr: [0.001], Avg Loss [4.379], Rank Corr.: [83.146%], Batch Time: [0.771 s], Total train time: [6173.762 s], Batch count: [7,690], Avg batch time [0.803 s], Throughput: [19914.8 ex/s]   4,051.570 ms,     6,174.09 s total
+1hour and 43 min - 0d:01h:43m:22s - $231.86
 30 minutes = ~70.00 (exact USD$69.43)
+
+================================================================================
+March2025_bursttry8_chessVision_3M_main_adamw_diff_attn_resid_gelu_lc0
+================================================================================
+CUDA available: True
+Number of GPUs: 8
+Current device: 0
+Device name: NVIDIA A10G
+TrainConfig: Namespace(model_config=PosixPath('/root/chess-hackathon/model_config.yaml'), load_path=PosixPath('/root/chess-hackathon/recover/checkpoint.pt'), bs=64, lr=0.001, wd=0.01, ws=25, grad_accum=5, save_steps=25, dataset_id='1e404a5c-140b-4e30-af3a-ee453536e9d8', stop_after_test_max_limit_train_batches=False, amp_enabled=True, fsdp_enabled=False, world_size=48, device_id=0, is_master=True)
+[ 2025-03-22 23:09:33 ] Setup for distributed training                                           3,562.615 ms,         3.79 s total
+Data path is /data/1e404a5c-140b-4e30-af3a-ee453536e9d8/lc0
+Current device: 0
+Device name: NVIDIA A10G
+Data path is /data/1e404a5c-140b-4e30-af3a-ee453536e9d8/lc0
+[ 2025-03-22 23:09:36 ] Intitialized datasets with 23,051,183 training and 5,762,795 test board evaluations.   2,498.577 ms,         6.29 s total
+ModelConfig: {'nlayers': 4, 'embed_dim': 64, 'inner_dim': 600, 'attention_dim': 64, 'use_1x1conv': False, 'dropout': 0.1}
+[ 2025-03-22 23:09:36 ] Initialized model with 3,102,945 params, moved to device                   419.376 ms,         6.71 s total
+Loading dataloaders with 32 workers
+Epoch [0] Step [147 / 1,501] Batch [739 / 7,504] Lr: [0.001], Avg Loss [4.734], Rank Corr.: [83.943%], Batch Time: [0.974 s], Total train time: [791.817 s], Batch count: [740], Avg batch time [1.070 s], Throughput: [15771.4 ex/s]   4,870.669 ms,
+0d:00h:03m:51s	$2.07
